@@ -8,7 +8,12 @@ OUT=public/assets/gds
 SOUNDS=assets/raw/game-dev-story-sounds/game-dev-story-sounds
 [[ -d "$RAW" ]] || { echo "No local artwork found. See docs/assets.md; proprietary artwork is not distributed with this project." >&2; exit 1; }
 command -v convert >/dev/null 2>&1 || { echo "ImageMagick is required for local asset extraction." >&2; exit 1; }
+# Preserve the tracked rights notice when regenerating the private runtime pack.
+ASSET_NOTICE=$(mktemp)
+trap 'rm -f "$ASSET_NOTICE"' EXIT
+if [[ -f "$OUT/NOTICE.md" ]]; then cp "$OUT/NOTICE.md" "$ASSET_NOTICE"; fi
 rm -rf "$OUT"; mkdir -p "$OUT"/{body,face,office,ui}
+if [[ -s "$ASSET_NOTICE" ]]; then cp "$ASSET_NOTICE" "$OUT/NOTICE.md"; fi
 cp "$RAW"/game/body*.png "$OUT/body/"
 cp "$RAW"/game/face_*.png "$OUT/face/"
 cp "$RAW"/office/desk_*.png "$RAW"/office/chair_*.png "$RAW"/office/pc_*.png "$RAW"/office/reception_*.png "$OUT/office/"

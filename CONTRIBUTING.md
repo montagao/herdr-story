@@ -13,8 +13,8 @@ Use TypeScript and the surrounding style. Keep browser/bridge contracts in `shar
 untrusted text before rendering, preserve read-only gates, and never automatically replay writes
 whose outcome is unknown. Persistence changes must cover migration and restart behavior.
 
-Do not submit `.env`, terminal captures, customer information, local databases, proprietary art,
-or screenshots containing it. New third-party assets need a source, license, and modification
+Do not submit `.env`, terminal captures, customer information, local databases, or raw asset dumps.
+The existing runtime art pack is private-only and excluded from public exports. New third-party assets need a source, license, and modification
 notes. Contributions to original code use the repository's ISC license.
 
 For bugs, include OS, Node/Bun versions, reproduction steps, expected/actual behavior, and a

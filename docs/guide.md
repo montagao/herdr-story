@@ -56,7 +56,7 @@ Run `npm run test:office-regulars` for isolated browser checks.
 
 ```
 npm install
-npm run assets      # extract sprites from assets/raw (needs ImageMagick; artwork is not committed)
+npm run assets      # optional: regenerate the tracked runtime pack from local raw sources (ImageMagick)
 npm run dev         # interactive local bridge (bun, :7788) + vite (:5173) against your running herdr
 npm run dev:read-only # local viewer without prompt/terminal write access
 npm run dev:mock    # same, with fake agents
@@ -214,7 +214,8 @@ the previous total for each filter while refreshing it, so unrelated agent updat
 Mock mode uses temporary in-memory studio state unless `HERDR_STORY_STATE_DIR` is explicitly set;
 `HERDR_STORY_MOCK_STATIC=1` disables random mock activity for repeatable checks.
 
-The optional Kairosoft artwork and audio under `assets/raw` and `public/assets/gds` are copyrighted and git-ignored: not covered by this repository’s license.
+The Kairosoft runtime artwork and audio under `public/assets/gds` are tracked in this private repo
+and are not covered by the ISC code license. Raw extraction inputs under `assets/raw` remain ignored.
 
 
 Agent windows show their cached or visible terminal screen first; longer history loads afterward.

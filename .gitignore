@@ -1,9 +1,8 @@
 node_modules
 dist
 shots
-# Kairosoft artwork: keep it local, never commit or redistribute
+# Raw extraction sources stay local; the runtime pack is tracked in this private repo.
 assets/raw
-public/assets/gds
 public/lab/*.png
 
 # Bun loads .env automatically, which is where a STRIPE_SECRET_KEY naturally ends up.

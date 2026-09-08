@@ -7,7 +7,12 @@ export function sourceFiles() {
     .split('\0').filter(path => path && existsSync(path)))].sort();
 }
 
-export function checkPublication(files = sourceFiles()) {
+/** The private checkout includes runtime artwork; public source exports deliberately omit it. */
+export function publicationFiles() {
+  return sourceFiles().filter(path => !path.startsWith('public/assets/gds/'));
+}
+
+export function checkPublication(files = publicationFiles()) {
   const errors: string[] = [];
   const forbidden = /(^|\/)(?:\.git|node_modules|dist|captures|recordings|shots|release)(?:\/|$)|^assets\/raw\/|^public\/assets\/gds\/|(?:^|\/)\.env(?:$|\.(?!example$))|\.(?:sqlite|db)(?:-|$)|\.(?:pem|key|log)$/;
   // Report locations only; never print a matched credential. This intentionally modest check
@@ -30,6 +35,6 @@ export function checkPublication(files = sourceFiles()) {
 }
 
 if (import.meta.main) {
-  try { console.log(`Publication checks passed for ${checkPublication().length} current source files. Git history is not included in this check.`); }
+  try { console.log(`Public-source export checks passed for ${checkPublication().length} files. The private runtime art pack and Git history are excluded, not cleared for publication.`); }
   catch (error) { console.error((error as Error).message); process.exitCode = 1; }
 }

@@ -20,7 +20,7 @@
 
 ![Herdr Story: four demo agents at their desks in an isometric office, with a live-style project roster](docs/screenshots/office.png)
 
-<p align="center"><sub>Actual app, fictional demo data. The pictured office uses an optional local art pack; <a href="docs/assets.md">a fresh checkout opens the roster and chat</a>.</sub></p>
+<p align="center"><sub>Actual app, fictional demo data. The full office assets are included in this private repository; <a href="docs/assets.md">artwork credits and public-build details</a>.</sub></p>
 
 Herdr Story turns your [Herdr](https://herdr.dev) agent sessions into a place you can look around.
 Codex and Claude get desks. Projects get whiteboards. Finished work becomes studio history.
@@ -56,7 +56,7 @@ model, and stop controls.
 
 ### No art pack? Start with the roster.
 
-The clean-checkout view supports existing-agent chat and controls. Room, hiring, studio,
+The art-free view supports existing-agent chat and controls. Room, hiring, studio,
 and billing windows currently need the full office. [Artwork details →](docs/assets.md)
 
 ![Desktop roster grouped by project without the optional artwork](docs/screenshots/roster.png)
@@ -80,9 +80,9 @@ npm run dev:mock
 Open **http://127.0.0.1:5173**. Mock mode needs no credentials, paid API calls, or running agents.
 For the fictional, read-only demo, open **[/?demo=1](http://127.0.0.1:5173/?demo=1)**.
 
-> **About the artwork:** the screenshots show the full office with separately supplied Game Dev
-> Story artwork. Those sheets aren’t included in the repo. Your fresh checkout opens a working
-> roster/chat view. [Asset setup and credits →](docs/assets.md)
+> **Ready to open the office:** this private repo includes the runtime art and audio, so no
+> extraction step is needed after cloning. The Kairosoft assets are separate from the ISC code
+> license and are excluded from public builds and source exports. [Asset details →](docs/assets.md)
 
 ### Bring your own agents
 

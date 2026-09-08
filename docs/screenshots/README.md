@@ -6,18 +6,18 @@ and agent controls.
 
 - `office.png`: full isometric office and roster (1440 × 960).
 - `office-agents.png`: close-up of four agents at their desks (1080 × 960).
-- `roster.png`: clean-checkout desktop roster (1120 × 840).
+- `roster.png`: art-free desktop roster (1120 × 840).
 - `conversation.png`: an agent’s terminal screen in the demo (1120 × 840).
-- `roster-mobile.png`: clean-checkout mobile roster (390 × 844).
+- `roster-mobile.png`: art-free mobile roster (390 × 844).
 
-The two office images depict the optional local Game Dev Story artwork (copyright Kairosoft),
+The two office images depict the Game Dev Story runtime artwork (copyright Kairosoft),
 alongside the project's original elements and attributed open props. This artwork is not covered
-by the repository's ISC source-code license. The underlying proprietary sheets are not committed.
+by the repository's ISC source-code license. The runtime sheets are tracked in the private repository; raw dumps remain ignored.
 The other three screenshots use a public build without that artwork.
 
-To refresh the clean-checkout screenshots, install Chromium with `npx playwright install chromium`,
+To refresh the art-free screenshots, install Chromium with `npx playwright install chromium`,
 then run `node scripts/screenshots.mjs` from the repository root. To capture the full office,
-install the optional local art pack first (see ../assets.md), then run
+use a checkout with the runtime pack (see ../assets.md), then run
 `node scripts/screenshots.mjs --office`.
 
 On the shared VPS, prefix either command with `/home/montagao/.local/bin/vps-job`.
