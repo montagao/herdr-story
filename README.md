@@ -16,7 +16,7 @@
   <a href="https://donate.stripe.com/9AQbM3eOZ5q31heeUV">Sponsor me ♥</a>
 </p>
 
-<p align="center"><kbd>LOCAL FIRST</kbd> &nbsp; <kbd>CODEX + CLAUDE</kbd> &nbsp; <kbd>BUN + PHASER</kbd> &nbsp; <a href="LICENSE">ISC source license</a></p>
+<p align="center"><kbd>LOCAL FIRST</kbd> &nbsp; <kbd>CODEX + CLAUDE</kbd> &nbsp; <kbd>BUN + PHASER</kbd> &nbsp; <a href="LICENSE">ISC source license</a> &nbsp; <a href="https://github.com/montagao/herdr-story/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/montagao/herdr-story/actions/workflows/ci.yml/badge.svg" valign="middle" /></a></p>
 
 ![Herdr Story: four demo agents at their desks in an isometric office, with a live-style project roster](docs/screenshots/office.png)
 
@@ -36,9 +36,35 @@ There’s a boss with ideas, a janitor with a cleanup plan, and a cat you can pe
 | **Catch up when you return** | See what shipped while you were away, including recorded payments and a USD revenue estimate. |
 | **Make the place yours** | Move desks and plants, change the room theme, rename employees, and watch their careers grow. |
 | **Meet the regulars** | Ask Boss for project-scoped ideas, let Gus help review inactive agents, or say hello to Miso the cat. |
+| **Read the conversation, not the screen** | An agent’s window shows its own transcript as prose, with the raw pane one click away and a stale veil while it refreshes. |
+| **Walk up to the front desk** | Four shortcuts: *Who needs me?*, *I have a new task*, *Catch me up*, and *Find something* across agents, boards, the journal and Boss’s archive. |
 
 Optional **Stripe and RevenueCat** integrations bring payment activity into the office.
 The bridge keeps recording while the page is closed, as long as it remains running.
+
+## The office cuts to a scene
+
+Like the game it borrows from, the office cuts away for its big moments. Every scene is earned by
+something real in the journal or the event stream, plays in the same pixel window chrome, and is
+a click or Escape to dismiss. Idle agents wander and gossip in between; new hires walk in over
+the landing, leavers say bye at reception, and a fan or the mascot drops by when a trial starts
+or a subscriber signs up.
+
+| Scene | What earns it |
+| --- | --- |
+| **Ship party** | An agent finishes real work, or money arrives |
+| **Weekly sales report** | The calendar rolls into a new week: projects ranked by what they earned or shipped |
+| **Awards night** | Employee of the week, or a trophy landing in the journal |
+| **Launch day** | A release entry, or a day that beats the best day on record |
+| **Crunch time** | Someone has been on one task for 25 minutes; when it ends they drop face-down on the desk |
+| **Training seminar** | A model or effort change, or a promotion |
+| **GAMEDEX** | Three projects ship in a single day |
+| **Bug blowout** | A failed or disputed payment, or a pane that crashed |
+| **Boss briefing** | Click the boss desk for product ideas drawn from the journal |
+| **Re-org** | Review idle agents, then watch the ones you let go walk out |
+
+Add `?debug` to the URL for a **Test events** tray that fires every payment event, scene and
+office gag on demand.
 
 <details>
 <summary><b>Take a closer look: agents, terminal output, and mobile</b></summary>
@@ -133,6 +159,13 @@ npm run check           # types, unit tests, publication checks, and build
 npm run build:public    # app build without the local proprietary art pack
 npx playwright install chromium
 npm run test:release    # isolated browser and bridge-access checks
+```
+
+```
+ Herdr session ──socket──▶  Bun bridge (bridge/)  ──websocket──▶  Browser (src/)
+   agents, panes,            polls agents, reads               Phaser office scene,
+   prompts, screens          transcripts, records the          roster, windows,
+                             journal and money in SQLite       cutscenes
 ```
 
 | Directory | What lives there |
