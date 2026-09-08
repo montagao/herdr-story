@@ -1,0 +1,26 @@
+node_modules
+dist
+shots
+# Kairosoft artwork: keep it local, never commit or redistribute
+assets/raw
+public/assets/gds
+public/lab/*.png
+
+# Bun loads .env automatically, which is where a STRIPE_SECRET_KEY naturally ends up.
+.env
+.env.*
+!.env.example
+
+# Local demo recordings and encoding intermediates
+recordings/
+
+# Private captures, local state, and release staging
+captures/
+release/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+.DS_Store
+scripts/_*-shot.mjs

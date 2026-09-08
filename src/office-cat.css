@@ -1,0 +1,24 @@
+#office-cat[hidden] { display:none; }
+#office-cat { position:fixed; inset:0; z-index:44; display:grid; place-items:center; padding:16px; background:#10273488; color:#29475d; font-family:var(--font); }
+.cat-window { width:min(490px,100%); max-height:calc(100dvh - 32px); overflow:auto; border:4px solid #8194a4; border-radius:5px; background:#f7fafc; box-shadow:0 4px 0 #4e6676,0 10px 32px #10273455; }
+.cat-window header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:#e4eef4; border-bottom:2px solid #b6c8d4; }
+.cat-window header b { font-weight:normal; font-size:18px; }
+.cat-window button { font:14px/1.45 var(--font); color:#29475d; border:1px solid #a3b9c9; border-bottom-width:3px; border-radius:3px; background:#edf4f8; padding:7px 11px; cursor:pointer; }
+.cat-window button:hover { background:#ddeaf2; }
+.cat-window button:focus-visible { outline:2px solid #347797; outline-offset:2px; }
+.cat-window button[hidden] { display:none; }
+.cat-window header button { font-size:22px; line-height:1; padding:3px 8px; }
+.cat-greeting { display:flex; align-items:center; gap:12px; padding:20px 18px 12px; }
+.cat-greeting canvas { display:block; width:108px; height:102px; image-rendering:pixelated; }
+.cat-greeting p { font-size:15px; line-height:1.6; margin:5px 0 12px; }
+.cat-window small { color:#748590; font-size:10px; letter-spacing:.04em; }
+.cat-memory { border-top:1px solid #c7d5de; padding:18px; margin:0 6px; }
+.cat-memory h2 { font-weight:normal; font-size:18px; line-height:1.5; margin:9px 0; overflow-wrap:anywhere; }
+.cat-memory p { font-size:13px; line-height:1.7; overflow-wrap:anywhere; margin:8px 0; }
+.cat-memory [data-status]:empty { display:none; }
+.cat-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+.cat-window footer { font-size:11px; line-height:1.7; padding:10px 18px; background:#eaf1f5; border-top:1px solid #c7d5de; color:#667c8c; }
+.reception-regulars { display:flex; flex-wrap:wrap; flex-shrink:0; align-items:center; gap:8px; padding:8px 16px; border-top:1px solid #c1d1dc; font-size:11px; }
+.reception-regulars span { color:#657d8e; margin-right:auto; }
+.reception-window .reception-regulars button { font-size:11px; padding:5px 9px; }
+@media(max-width:500px) { #office-cat { padding:10px; } .cat-window { max-height:calc(100dvh - 20px); } .cat-greeting { padding:12px; gap:5px; } .cat-greeting canvas { width:90px; height:85px; } }

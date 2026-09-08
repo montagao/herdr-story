@@ -1,0 +1,32 @@
+#reorg-cutscene { position:fixed; inset:0; z-index:42; display:grid; place-items:center; padding:16px; background:#102532bc; color:#243f50; font:14px var(--font); }
+.departure-window { width:min(736px,100%); max-height:calc(100dvh - 32px); overflow:auto; background:#fcfffc; border:4px solid #7b8794; border-radius:6px; box-shadow:inset 0 0 0 2px #e6edf0,0 6px 0 #465663; }
+.departure-window > header { display:flex; align-items:center; gap:14px; padding:10px 14px; border-bottom:2px solid #acbbc5; background:#e9f0f3; }
+.departure-window > header > span { padding:3px 8px; border:1px solid #b89b57; background:#f8ebc8; font-size:12px; }
+.departure-window > header > b { flex:1; font-size:16px; font-weight:normal; }
+.departure-window button { border:1px solid #8da4b3; border-bottom-width:3px; border-radius:3px; padding:8px 12px; background:#e7eff4; color:#284d64; font:inherit; cursor:pointer; }
+.departure-window button:hover { background:#d5e5ec; }
+.departure-window button:focus-visible { outline:2px solid #307c9b; outline-offset:3px; }
+.departure-window [data-close] { border:0; padding:0 4px; background:transparent; font-size:24px; }
+.departure-stage { margin:12px 12px 0; border:3px solid #4f6471; background:#98764c; }
+.departure-stage canvas { display:block; width:100%; height:auto; image-rendering:pixelated; }
+.departure-caption { min-height:62px; display:flex; flex-direction:column; gap:5px; padding:14px 18px 8px; }
+.departure-caption b { font-weight:normal; font-size:16px; }
+.departure-caption span { color:#627987; font-size:12px; }
+.departure-roll { display:flex; gap:6px; overflow:auto; padding:6px 16px 12px; }
+.departure-roll > span { white-space:nowrap; font-size:11px; padding:4px 7px; border:1px solid #c1cfd7; background:#edf2f4; }
+.departure-roll [data-done] { color:#406d49; border-color:#a1bda4; background:#e5f0e4; }
+.departure-window > footer { display:flex; align-items:center; gap:10px; padding:10px 14px; border-top:1px solid #b7c6ce; background:#e9f0f3; }
+.departure-window > footer > span { flex:1; font-size:12px; }
+.departure-window [data-continue] { background:#dcebbd; border-color:#7d9765; color:#3c5635; }
+@media(max-width:600px) {
+  #reorg-cutscene { padding:10px; font-size:12px; }
+  .departure-window { max-height:calc(100dvh - 20px); }
+  .departure-window > header { gap:8px; padding:8px; }
+  .departure-window > header > b { font-size:14px; }
+  .departure-stage { margin:8px 6px 0; border-width:2px; }
+  .departure-caption { padding:12px 10px 6px; }
+  .departure-caption b { font-size:14px; }
+  .departure-roll { padding-left:10px; padding-right:10px; }
+  .departure-window > footer { padding:8px; gap:6px; flex-wrap:wrap; }
+  .departure-window button { padding:7px 9px; }
+}

@@ -1,0 +1,17 @@
+{
+  "$comment": "Optional customization for private live captures. Never put private project names or IDs in this tracked example.",
+  "theme": "classic",
+  "redactHome": true,
+  "redactPatterns": [
+    "https?://[a-z0-9.-]+\\.ts\\.net\\S*",
+    "https?://[a-z0-9-]+\\.trycloudflare\\.com\\S*"
+  ],
+  "namePool": [
+    "Ada",
+    "Bea",
+    "Cal",
+    "Dex",
+    "Eli",
+    "Fen"
+  ]
+}

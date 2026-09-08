@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>seat layout editor</title>
+<style>
+body{margin:0;font:14px system-ui,sans-serif;background:#222;color:#eee;display:flex;gap:16px;padding:16px;flex-wrap:wrap}
+#stage{position:relative;image-rendering:pixelated}
+canvas{image-rendering:pixelated;background:#8a5a3c;cursor:crosshair;display:block}
+.pal{display:flex;flex-wrap:wrap;gap:6px;max-width:420px}
+.pal button{background:#333;border:1px solid #555;color:#eee;padding:4px;border-radius:4px;cursor:pointer;display:flex;flex-direction:column;align-items:center;font-size:11px}
+.pal button img{image-rendering:pixelated;height:48px}
+.pal button:hover{background:#444}
+#side{width:420px;display:flex;flex-direction:column;gap:10px}
+textarea{width:100%;height:120px;background:#111;color:#9f9;border:1px solid #444;font:12px monospace}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button.act{background:#1d9bf0;border:0;color:#fff;padding:6px 12px;border-radius:4px;cursor:pointer}
+#items{font:12px monospace;background:#111;padding:6px;border:1px solid #444;max-height:200px;overflow:auto}
+#items div{padding:2px 4px;cursor:pointer}#items div.sel{background:#1d9bf0}
+kbd{background:#444;padding:1px 4px;border-radius:3px;font:11px monospace}
+h3{margin:6px 0 2px;font-size:13px;color:#aaa}
+</style></head><body>
+<div>
+  <canvas id="c" width="432" height="324"></canvas>
+  <div class="row" style="margin-top:8px">
+    <label>reference <input id="refA" type="range" min="0" max="100" value="100"></label>
+    <label>sprites <input id="spA" type="range" min="0" max="100" value="100"></label>
+    <label><input id="grid" type="checkbox"> grid</label>
+    <span id="pos"></span>
+  </div>
+  <p style="max-width:432px;color:#aaa;font-size:12px">Click a sprite in the palette to add it, drag to place (snaps to game pixels). Keys: <kbd>←↑↓→</kbd> nudge, <kbd>f</kbd> flip, <kbd>[</kbd>/<kbd>]</kbd> send back / bring forward, <kbd>1</kbd>-<kbd>4</kbd> tag seat number, <kbd>Delete</kbd> remove. Then <b>Save</b>.</p>
+</div>
+<div id="side">
+  <h3>desks</h3><div class="pal" id="palD"></div>
+  <h3>chairs</h3><div class="pal" id="palC"></div>
+  <h3>monitors</h3><div class="pal" id="palP"></div>
+  <h3>people</h3><div class="pal" id="palB"></div>
+  <h3>placed (draw order, back → front)</h3><div id="items"></div>
+  <div class="row"><button class="act" id="save">Save</button><button id="clear">Clear</button><span id="msg"></span></div>
+  <textarea id="out" readonly></textarea>
+</div>
+<script>
+const SPR = {
+  'D-f0':'desk frame 0','D-f1':'desk frame 1',
+  'C0':'chair 0','C1':'chair 1','C2':'chair 2','C3':'chair 3',
+  'P-back':'monitor back','P-on':'monitor screen',
+  'B-front':'person front','B-front2':'person front (mouth)','B-back':'person back','B-stand':'person standing',
+};
+const imgs = {}; let items = []; let sel = -1; const cv = document.getElementById('c'), ctx = cv.getContext('2d'); const S = 4;
+const ref = new Image(); ref.src = 'ref.png';
+Promise.all(Object.keys(SPR).map(k => new Promise(r => { const i = new Image(); i.onload = () => { imgs[k] = i; r(); }; i.src = k + '.png'; }))).then(() => { buildPalette(); load(); draw(); });
+function buildPalette() {
+  for (const k of Object.keys(SPR)) {
+    const b = document.createElement('button'); b.innerHTML = `<img src="${k}.png"><span>${k}</span>`; b.title = SPR[k];
+    b.onclick = () => { items.push({ key: k, flip: false, x: 40, y: 30, seat: 0 }); sel = items.length - 1; draw(); };
+    document.getElementById(k.startsWith('D') ? 'palD' : k.startsWith('C') ? 'palC' : k.startsWith('P') ? 'palP' : 'palB').appendChild(b);
+  }
+}
+function draw() {
+  ctx.imageSmoothingEnabled = false; ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.globalAlpha = +refA.value / 100; if (ref.complete) ctx.drawImage(ref, 0, 0, ref.width * S, ref.height * S);
+  ctx.globalAlpha = +spA.value / 100;
+  items.forEach((it, i) => {
+    const im = imgs[it.key]; ctx.save(); ctx.translate(it.x * S, it.y * S);
+    if (it.flip) { ctx.translate(im.width * S, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(im, 0, 0, im.width * S, im.height * S); ctx.restore();
+    if (i === sel) { ctx.globalAlpha = 1; ctx.strokeStyle = '#0f0'; ctx.lineWidth = 1; ctx.strokeRect(it.x * S + .5, it.y * S + .5, im.width * S, im.height * S); ctx.globalAlpha = +spA.value / 100; }
+    if (it.seat) { ctx.globalAlpha = 1; ctx.fillStyle = '#f33'; ctx.font = 'bold 14px sans-serif'; ctx.fillText(it.seat, it.x * S + 2, it.y * S + 14); ctx.globalAlpha = +spA.value / 100; }
+  });
+  ctx.globalAlpha = 1;
+  if (grid.checked) { ctx.strokeStyle = 'rgba(0,255,0,.35)'; for (let x = 0; x < cv.width; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, cv.height); ctx.stroke(); } for (let y = 0; y < cv.height; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cv.width, y); ctx.stroke(); } }
+  const list = document.getElementById('items'); list.innerHTML = '';
+  items.forEach((it, i) => { const d = document.createElement('div'); d.textContent = `${it.seat ? 'seat ' + it.seat + ' ' : ''}${it.key}${it.flip ? ' (flipped)' : ''} @ ${it.x},${it.y}`; d.className = i === sel ? 'sel' : ''; d.onclick = () => { sel = i; draw(); }; list.appendChild(d); });
+  out.value = JSON.stringify({ scale: 'game px, frame top-left, reference 108x81', items }, null, 1);
+}
+let drag = null;
+cv.addEventListener('mousedown', e => {
+  const r = cv.getBoundingClientRect(); const gx = (e.clientX - r.left) / S, gy = (e.clientY - r.top) / S;
+  for (let i = items.length - 1; i >= 0; i--) { const it = items[i], im = imgs[it.key]; if (gx >= it.x && gx < it.x + im.width && gy >= it.y && gy < it.y + im.height) { sel = i; drag = { dx: gx - it.x, dy: gy - it.y }; draw(); return; } }
+  sel = -1; draw();
+});
+window.addEventListener('mousemove', e => {
+  const r = cv.getBoundingClientRect(); const gx = (e.clientX - r.left) / S, gy = (e.clientY - r.top) / S;
+  pos.textContent = `cursor ${Math.floor(gx)},${Math.floor(gy)}`;
+  if (drag && sel >= 0) { items[sel].x = Math.round(gx - drag.dx); items[sel].y = Math.round(gy - drag.dy); draw(); }
+});
+window.addEventListener('mouseup', () => drag = null);
+window.addEventListener('keydown', e => {
+  if (sel < 0 || e.target.tagName === 'TEXTAREA') return; const it = items[sel];
+  const k = e.key;
+  if (k === 'ArrowLeft') it.x--; else if (k === 'ArrowRight') it.x++; else if (k === 'ArrowUp') it.y--; else if (k === 'ArrowDown') it.y++;
+  else if (k === 'f') it.flip = !it.flip; else if (k === 'Delete' || k === 'Backspace') { items.splice(sel, 1); sel = -1; }
+  else if (k === '[' && sel > 0) { [items[sel - 1], items[sel]] = [items[sel], items[sel - 1]]; sel--; }
+  else if (k === ']' && sel < items.length - 1) { [items[sel + 1], items[sel]] = [items[sel], items[sel + 1]]; sel++; }
+  else if ('1234'.includes(k) && k) it.seat = +k; else return;
+  e.preventDefault(); draw();
+});
+refA.oninput = spA.oninput = grid.onchange = draw;
+document.getElementById('clear').onclick = () => { items = []; sel = -1; draw(); };
+document.getElementById('save').onclick = async () => {
+  try { const r = await fetch('/api/seatmap', { method: 'POST', headers: { 'content-type': 'application/json' }, body: out.value }); msg.textContent = r.ok ? 'saved ✓ ' + new Date().toLocaleTimeString() : 'save failed ' + r.status; }
+  catch (e) { msg.textContent = 'save failed: ' + e.message; }
+};
+async function load() { try { const r = await fetch('/api/seatmap'); if (r.ok) { const j = await r.json(); if (j.items) items = j.items; } } catch {} }
+</script></body></html>

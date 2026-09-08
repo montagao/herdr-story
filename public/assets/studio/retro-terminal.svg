@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="28" height="48" viewBox="0 0 28 48" shape-rendering="crispEdges">
+  <!-- Whole-pixel faces follow the office's 2:1 isometric grid. -->
+  <path fill="#493b2e" d="M2 5 11 0 27 8V42L18 47 2 39Z"/>
+  <!-- Warm enamel body, lit from the same upper-left corner as the desks. -->
+  <path fill="#858775" d="M18 13 26 9V41L18 45Z"/>
+  <path fill="#bdbba1" d="M3 6 18 13V45L3 38Z"/>
+  <path fill="#eee5c9" d="M3 5 11 1 26 8 18 12Z"/>
+  <path fill="#fff3d6" d="M4 5 18 12V13L4 6Z"/>
+  <path fill="#a5a58e" d="M24 11 25 10V39L24 40Z"/>
+  <!-- Recessed CRT surround and tinted glass. -->
+  <path fill="#f0e6c8" d="M4 8 17 14V29L4 23Z"/>
+  <path fill="#686c59" d="M5 10 16 15V27L5 22Z"/>
+  <path fill="#374d43" d="M6 12 15 16V25L6 21Z"/>
+  <path fill="#759882" d="M7 13 14 16V24L7 21Z"/>
+  <path fill="#a8c1a1" d="M7 13 14 16V18L7 15Z"/>
+  <path fill="#8fac92" d="M7 15 9 16V21L7 20Z"/>
+  <path fill="#d1dbc0" d="M9 19 12 20V21L9 20Z"/>
+  <path fill="#d1dbc0" d="M9 21 10 21V22H9Z"/>
+  <!-- Side vents are recessed into the dark face, not painted across the front. -->
+  <path fill="#626955" d="M20 17 24 15V16L20 18ZM20 20 24 18V19L20 21ZM20 23 24 21V22L20 24Z"/>
+  <!-- Projecting keyboard shelf, with a shadow underneath. -->
+  <path fill="#493b2e" d="M3 24 19 32 15 34 0 27V25Z"/>
+  <path fill="#dcd4b6" d="M3 24 18 31 15 33 1 26Z"/>
+  <path fill="#f5ebcd" d="M1 26 15 33V34L1 27Z"/>
+  <path fill="#767b69" d="M4 25 13 29 11 30 2 26Z"/>
+  <path fill="#aeb29a" d="M5 26 11 29V30L5 27Z"/>
+  <path fill="#527953" d="M14 30 16 31 15 32 13 31Z"/>
+  <!-- Service door, a small brass latch, and a dark plinth. -->
+  <path fill="#939581" d="M4 30 16 36V43L4 37Z"/>
+  <path fill="#c9c5a9" d="M5 31 15 36V41L5 36Z"/>
+  <path fill="#786b49" d="M6 32 7 32V35L6 34Z"/>
+  <path fill="#e2cb90" d="M6 32H7V33H6Z"/>
+  <path fill="#655e48" d="M3 37 18 44V46L3 39ZM18 44 26 40V42L18 46Z"/>
+  <path fill="#493b2e" d="M4 39 6 40V42L4 41ZM16 45 18 46V48L16 47ZM24 42 26 41V43L24 44Z"/>
+</svg>

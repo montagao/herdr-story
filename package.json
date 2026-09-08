@@ -1,0 +1,87 @@
+{
+  "name": "herdr-story",
+  "version": "1.0.0",
+  "description": "A local agent dashboard with an isometric office, conversations, and durable project history.",
+  "scripts": {
+    "test": "bun test bridge src",
+    "test:escape": "npm run build && node scripts/escape-smoke.mjs",
+    "test:reception": "npm run build && bun test src/reception-data.test.ts bridge/boss.test.ts && node scripts/reception-smoke.mjs",
+    "test:office-regulars": "npm run build && node scripts/office-regulars-smoke.mjs",
+    "test:agent-settings": "npm run build && node scripts/agent-settings-smoke.mjs",
+    "test:free-agent": "npm run build && node scripts/free-agent-smoke.mjs",
+    "test:boss": "npm run build && bun test bridge/boss.test.ts bridge/boss-reply.test.ts bridge/transcript.test.ts bridge/transcript-incremental.test.ts && node scripts/boss-smoke.mjs",
+    "test:pasted-text": "npm run build && node scripts/pasted-text-smoke.mjs",
+    "test:studio": "npm run build && node scripts/studio-smoke.mjs",
+    "test:sweep": "npm run build && bun test bridge/sweep.test.ts && node scripts/sweep-smoke.mjs",
+    "test:recap": "npm run build && node scripts/recap-smoke.mjs && node scripts/recap-money-smoke.mjs",
+    "test:empty-desk": "npm run build && node scripts/empty-desk-smoke.mjs",
+    "test:revenue-settings": "npm run build && node scripts/revenue-settings-smoke.mjs",
+    "dev": "./scripts/dev.sh",
+    "dev:read-only": "HERDR_STORY_WRITE=0 ./scripts/dev.sh",
+    "dev:mock": "./scripts/dev.sh --mock",
+    "dev:tailscale": "./scripts/dev.sh --tailscale",
+    "bridge": "bun bridge/server.ts",
+    "build": "vite build",
+    "preview": "vite preview",
+    "shot": "node scripts/shot.mjs",
+    "assets": "./scripts/extract-assets.sh",
+    "typecheck": "tsc -p .",
+    "test:demo": "node scripts/demo-smoke.mjs",
+    "demo:record": "node scripts/record-demo.mjs",
+    "demo:export": "bun run bridge/demo-export.ts",
+    "test:dialog-cache": "npm run build && bun test src/net/terminal-cache.test.ts && node scripts/dialog-cache-smoke.mjs",
+    "test:conversation": "npm run build && node scripts/conversation-smoke.mjs",
+    "test:performance": "npm run build && node scripts/performance-smoke.mjs && node scripts/office-performance-smoke.mjs && node scripts/output-health-smoke.mjs && node scripts/terminal-render-smoke.mjs",
+    "test:output-health": "npm run build && node scripts/output-health-smoke.mjs",
+    "test:terminal-render": "npm run build && node scripts/terminal-render-smoke.mjs",
+    "test:terminal-scroll": "npm run build && node scripts/terminal-scroll-smoke.mjs",
+    "test:queue-status": "npm run build && node scripts/queue-status-smoke.mjs",
+    "test:journal": "npm run build && node scripts/journal-performance-smoke.mjs",
+    "test:interrupt": "npm run build && bun test bridge/interrupt.test.ts && node scripts/interrupt-smoke.mjs",
+    "test:journal-read": "npm run build && bun test bridge/journal-read.test.ts && node scripts/journal-read-smoke.mjs",
+    "test:plant-preservation": "npm run build && bun test src/scenes/roomPlan.test.ts && node scripts/plant-preservation-smoke.mjs",
+    "test:studio-interactions": "npm run build && bun test bridge/studio-actions.test.ts src/studio-saves.test.ts src/net/client.test.ts && node scripts/studio-interactions-smoke.mjs",
+    "test:payment-details": "npm run build && bun test bridge/payment-details.test.ts bridge/revenuecat-webhook.test.ts bridge/stripe-events.test.ts && node scripts/payment-details-smoke.mjs",
+    "check": "npm run typecheck && npm test && npm run check:publication && npm run build",
+    "build:public": "npm run check:publication && HERDR_STORY_PUBLIC_BUILD=1 vite build",
+    "check:publication": "bun scripts/check-publication.ts",
+    "release:source": "bun scripts/release-source.ts",
+    "test:release": "node scripts/release-smoke.mjs",
+    "demo:sample": "bun scripts/demo-sample.ts"
+  },
+  "keywords": [
+    "herdr",
+    "agents",
+    "local-first",
+    "phaser",
+    "dashboard"
+  ],
+  "author": "montagao",
+  "license": "ISC",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "markdown-it": "^15.0.1",
+    "phaser": "^4.2.1",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "bun-types": "^1.4.0",
+    "playwright": "^1.63.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=22.12.0",
+    "bun": ">=1.3.14"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/montagao/herdr-story.git"
+  },
+  "homepage": "https://github.com/montagao/herdr-story#readme",
+  "bugs": {
+    "url": "https://github.com/montagao/herdr-story/issues"
+  }
+}

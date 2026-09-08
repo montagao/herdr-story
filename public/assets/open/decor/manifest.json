@@ -1,0 +1,51 @@
+[
+  {
+    "id": "zephilie-office-stool",
+    "w": 17,
+    "h": 24,
+    "src": "/assets/open/decor/zephilie-office-stool.png",
+    "zone": "aisle"
+  },
+  {
+    "id": "zephilie-wastebasket",
+    "w": 15,
+    "h": 24,
+    "src": "/assets/open/decor/zephilie-wastebasket.png",
+    "zone": "wall"
+  },
+  {
+    "id": "zephilie-retro-terminal",
+    "w": 28,
+    "h": 48,
+    "src": "/assets/studio/retro-terminal.svg",
+    "zone": "wall"
+  },
+  {
+    "id": "zephilie-foliage-plant",
+    "w": 24,
+    "h": 48,
+    "src": "/assets/open/decor/zephilie-foliage-plant.png",
+    "zone": "aisle"
+  },
+  {
+    "id": "zephilie-desk-plant",
+    "w": 15,
+    "h": 28,
+    "src": "/assets/open/decor/zephilie-desk-plant.png",
+    "zone": "aisle"
+  },
+  {
+    "id": "zephilie-wide-plant",
+    "w": 37,
+    "h": 24,
+    "src": "/assets/open/decor/zephilie-wide-plant.png",
+    "zone": "aisle"
+  },
+  {
+    "id": "zephilie-leafy-plant",
+    "w": 33,
+    "h": 37,
+    "src": "/assets/open/decor/zephilie-leafy-plant.png",
+    "zone": "aisle"
+  }
+]

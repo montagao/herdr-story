@@ -1,0 +1,321 @@
+{
+  "version": 1,
+  "capturedAt": 1788264000000,
+  "theme": "classic",
+  "agents": [
+    {
+      "pane_id": "demo:p0",
+      "workspace_id": "paperplane",
+      "cwd": "workspace:paperplane",
+      "agent": "codex",
+      "agent_status": "working",
+      "employee_id": "sample-employee-0",
+      "office_name": "Ada",
+      "office_look": {
+        "body": 0,
+        "face": 0
+      },
+      "name": "Ada",
+      "title": "Improve keyboard navigation",
+      "last_prompt": "Improve keyboard navigation"
+    },
+    {
+      "pane_id": "demo:p1",
+      "workspace_id": "lantern",
+      "cwd": "workspace:lantern",
+      "agent": "claude",
+      "agent_status": "done",
+      "employee_id": "sample-employee-1",
+      "office_name": "Bea",
+      "office_look": {
+        "body": 1,
+        "face": 1
+      },
+      "name": "Bea",
+      "title": "Add a welcome screen",
+      "last_prompt": "Add a welcome screen"
+    },
+    {
+      "pane_id": "demo:p2",
+      "workspace_id": "paperplane",
+      "cwd": "workspace:paperplane",
+      "agent": "codex",
+      "agent_status": "done",
+      "employee_id": "sample-employee-2",
+      "office_name": "Cal",
+      "office_look": {
+        "body": 2,
+        "face": 2
+      },
+      "name": "Cal",
+      "title": "Test offline recovery",
+      "last_prompt": "Test offline recovery"
+    },
+    {
+      "pane_id": "demo:p3",
+      "workspace_id": "lantern",
+      "cwd": "workspace:lantern",
+      "agent": "claude",
+      "agent_status": "done",
+      "employee_id": "sample-employee-3",
+      "office_name": "Dex",
+      "office_look": {
+        "body": 3,
+        "face": 3
+      },
+      "name": "Dex",
+      "title": "Write the getting started guide",
+      "last_prompt": "Write the getting started guide"
+    }
+  ],
+  "workspaces": [
+    {
+      "workspace_id": "paperplane",
+      "label": "paperplane"
+    },
+    {
+      "workspace_id": "lantern",
+      "label": "lantern"
+    }
+  ],
+  "events": [],
+  "money": [],
+  "studio": {
+    "version": 1,
+    "revision": 1,
+    "employees": [
+      {
+        "id": "sample-employee-0",
+        "version": 1,
+        "name": "Ada",
+        "bio": "A fictional member of the sample office.",
+        "kind": "codex",
+        "face": 0,
+        "body": 0,
+        "favorite": true,
+        "createdAt": 1788177600000,
+        "shipped": 1,
+        "stats": {
+          "program": 1,
+          "scenario": 0,
+          "graphics": 0,
+          "sound": 0,
+          "debug": 0,
+          "promo": 0
+        }
+      },
+      {
+        "id": "sample-employee-1",
+        "version": 1,
+        "name": "Bea",
+        "bio": "A fictional member of the sample office.",
+        "kind": "claude",
+        "face": 1,
+        "body": 1,
+        "favorite": false,
+        "createdAt": 1788177600000,
+        "shipped": 1,
+        "stats": {
+          "program": 1,
+          "scenario": 0,
+          "graphics": 0,
+          "sound": 0,
+          "debug": 0,
+          "promo": 0
+        }
+      },
+      {
+        "id": "sample-employee-2",
+        "version": 1,
+        "name": "Cal",
+        "bio": "A fictional member of the sample office.",
+        "kind": "codex",
+        "face": 2,
+        "body": 2,
+        "favorite": false,
+        "createdAt": 1788177600000,
+        "shipped": 1,
+        "stats": {
+          "program": 1,
+          "scenario": 0,
+          "graphics": 0,
+          "sound": 0,
+          "debug": 0,
+          "promo": 0
+        }
+      },
+      {
+        "id": "sample-employee-3",
+        "version": 1,
+        "name": "Dex",
+        "bio": "A fictional member of the sample office.",
+        "kind": "claude",
+        "face": 3,
+        "body": 3,
+        "favorite": false,
+        "createdAt": 1788177600000,
+        "shipped": 1,
+        "stats": {
+          "program": 1,
+          "scenario": 0,
+          "graphics": 0,
+          "sound": 0,
+          "debug": 0,
+          "promo": 0
+        }
+      }
+    ],
+    "projects": [
+      {
+        "id": "workspace:paperplane",
+        "version": 1,
+        "name": "Paperplane",
+        "notes": "An imaginary project for exploring the office.",
+        "color": "#307c9b",
+        "goals": []
+      },
+      {
+        "id": "workspace:lantern",
+        "version": 1,
+        "name": "Lantern",
+        "notes": "An imaginary project for exploring the office.",
+        "color": "#39815b",
+        "goals": []
+      }
+    ],
+    "journal": [
+      {
+        "id": "sample-task-0",
+        "version": 1,
+        "at": 1788260400000,
+        "kind": "task",
+        "title": "Improve keyboard navigation",
+        "notes": "Fictional example: implementation complete and checks passed.",
+        "project": "workspace:paperplane",
+        "contributors": [
+          "sample-employee-0"
+        ],
+        "url": "",
+        "source": "agent",
+        "stat": "program"
+      },
+      {
+        "id": "sample-task-1",
+        "version": 1,
+        "at": 1788256800000,
+        "kind": "task",
+        "title": "Add a welcome screen",
+        "notes": "Fictional example: implementation complete and checks passed.",
+        "project": "workspace:lantern",
+        "contributors": [
+          "sample-employee-1"
+        ],
+        "url": "",
+        "source": "agent",
+        "stat": "program"
+      },
+      {
+        "id": "sample-task-2",
+        "version": 1,
+        "at": 1788253200000,
+        "kind": "task",
+        "title": "Test offline recovery",
+        "notes": "Fictional example: implementation complete and checks passed.",
+        "project": "workspace:paperplane",
+        "contributors": [
+          "sample-employee-2"
+        ],
+        "url": "",
+        "source": "agent",
+        "stat": "program"
+      },
+      {
+        "id": "sample-task-3",
+        "version": 1,
+        "at": 1788249600000,
+        "kind": "task",
+        "title": "Write the getting started guide",
+        "notes": "Fictional example: implementation complete and checks passed.",
+        "project": "workspace:lantern",
+        "contributors": [
+          "sample-employee-3"
+        ],
+        "url": "",
+        "source": "agent",
+        "stat": "program"
+      }
+    ],
+    "room": {
+      "version": 1,
+      "items": null,
+      "projectOrder": [
+        "workspace:paperplane",
+        "workspace:lantern"
+      ]
+    },
+    "journalTotal": 4,
+    "journalSummary": {
+      "trophies": 4,
+      "tasksByProject": {
+        "workspace:paperplane": 2,
+        "workspace:lantern": 2
+      },
+      "achievementsByEmployee": {
+        "sample-employee-0": 1,
+        "sample-employee-1": 1,
+        "sample-employee-2": 1,
+        "sample-employee-3": 1
+      }
+    }
+  },
+  "revenue": {
+    "24h": {
+      "source": "stripe",
+      "amount": 125,
+      "currency": "usd",
+      "rangeSelectable": true,
+      "note": "Fictional sample revenue"
+    },
+    "7d": {
+      "source": "stripe",
+      "amount": 250,
+      "currency": "usd",
+      "rangeSelectable": true,
+      "note": "Fictional sample revenue"
+    },
+    "30d": {
+      "source": "stripe",
+      "amount": 375,
+      "currency": "usd",
+      "rangeSelectable": true,
+      "note": "Fictional sample revenue"
+    },
+    "3m": {
+      "source": "stripe",
+      "amount": 500,
+      "currency": "usd",
+      "rangeSelectable": true,
+      "note": "Fictional sample revenue"
+    },
+    "ytd": {
+      "source": "stripe",
+      "amount": 625,
+      "currency": "usd",
+      "rangeSelectable": true,
+      "note": "Fictional sample revenue"
+    },
+    "all": {
+      "source": "stripe",
+      "amount": 750,
+      "currency": "usd",
+      "rangeSelectable": true,
+      "note": "Fictional sample revenue"
+    }
+  },
+  "transcripts": {
+    "demo:p0": "> Improve keyboard navigation\n\nImplemented the example change. Checks passed.\nThis is fictional terminal output, not a real agent session.",
+    "demo:p1": "> Add a welcome screen\n\nImplemented the example change. Checks passed.\nThis is fictional terminal output, not a real agent session.",
+    "demo:p2": "> Test offline recovery\n\nImplemented the example change. Checks passed.\nThis is fictional terminal output, not a real agent session.",
+    "demo:p3": "> Write the getting started guide\n\nImplemented the example change. Checks passed.\nThis is fictional terminal output, not a real agent session."
+  }
+}

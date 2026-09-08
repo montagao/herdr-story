@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>herdr story</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/src/style.css" />
+<link rel="stylesheet" href="/src/studio.css" />
+</head>
+<body>
+<div id="app">
+  <div id="game"><div id="themer"><button id="theme-btn" type="button" title="Office theme (T)" aria-expanded="false"></button><div id="theme-gallery" data-block-office-input hidden></div></div><div id="hud" hidden></div></div>
+  <aside id="feed">
+    <header class="feed-head"><span class="feed-title"><span>Agents<small>office roster</small></span><span class="head-tools"><button id="hire-agent" type="button" title="Hire an agent" disabled><span aria-hidden="true">＋</span> Hire</button><button id="settings" type="button" title="Settings"></button><button id="mute" type="button" title="Sound"></button></span></span><nav class="feed-tabs" aria-label="Agent filters" role="tablist"><button type="button" class="active" data-filter="all" role="tab" aria-selected="true">All</button><button type="button" data-filter="blocked" role="tab" aria-selected="false">Needs you</button></nav></header>
+    <div id="pinned"></div>
+    <div id="posts"></div>
+  </aside>
+</div>
+<div id="dialog" role="dialog" aria-modal="true" data-block-office-input hidden></div>
+<div id="party" data-block-office-input hidden></div>
+<div id="billing-setup" role="dialog" aria-modal="true" data-block-office-input hidden></div>
+<div id="loading" role="status" aria-live="polite">
+  <div class="load-sky"></div>
+  <div class="load-card">
+    <img class="load-mascot" src="/assets/gds/ui/kairokun.png" alt="" onerror="this.hidden=true">
+    <div class="load-title"><small>Kairosoft-style office for your agents</small><b>herdr story</b></div>
+    <div class="load-track"><i data-bar style="width:8%"></i></div>
+    <div class="load-status"><span data-status>Now loading</span><span class="load-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+    <p class="load-note" data-note>Tip · click any desk to talk to the agent sitting there</p>
+  </div>
+</div>
+<div id="boot-error" hidden></div>
+<script>
+window.__herdrReady = false;
+function showBootError(reason) {
+  if (window.__herdrReady) return;
+  const box = document.getElementById('boot-error');
+  box.hidden = false;
+  box.textContent = 'Could not start the office: ' + (reason && (reason.message || reason.reason && reason.reason.message) || String(reason));
+}
+addEventListener('error', showBootError);
+addEventListener('unhandledrejection', showBootError);
+</script>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
