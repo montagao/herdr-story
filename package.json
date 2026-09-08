@@ -67,7 +67,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
-    "bun-types": "^1.4.0",
+    "bun-types": "^1.4.1",
     "playwright": "^1.63.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
