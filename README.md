@@ -11,6 +11,22 @@ ISC licensed. The full pixel-art office currently requires separately supplied a
 it is **not** a fully redistributable game asset pack. A clean checkout opens a roster/chat
 view without that artwork. See [asset requirements and credits](docs/assets.md).
 
+## Screenshots
+
+The fictional demo below shows the roster and terminal viewer available in a clean checkout.
+The full isometric office requires the optional local artwork described above.
+
+![Desktop agent roster grouped by project](docs/screenshots/roster.png)
+
+<details>
+<summary>Terminal output and mobile roster</summary>
+
+![An agent’s terminal output in the read-only demo](docs/screenshots/conversation.png)
+
+<img src="docs/screenshots/roster-mobile.png" alt="Agent roster on a mobile screen" width="390" />
+
+</details>
+
 ## What it does
 
 - Groups live agents by project, with conversations, model/effort controls, queues, and stop controls.
