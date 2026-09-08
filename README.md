@@ -13,15 +13,19 @@ view without that artwork. See [asset requirements and credits](docs/assets.md).
 
 ## Screenshots
 
-The fictional demo below shows the roster and terminal viewer available in a clean checkout.
-The full isometric office requires the optional local artwork described above.
+The isometric office with four fictional demo agents, two project teams, and sample revenue.
+These office screenshots use the optional local artwork; it is not bundled with a clean checkout.
 
-![Desktop agent roster grouped by project](docs/screenshots/roster.png)
+![Isometric office with demo agents working at desks and a project-grouped roster](docs/screenshots/office.png)
 
 <details>
-<summary>Terminal output and mobile roster</summary>
+<summary>Agents at their desks, terminal output, and clean-checkout views</summary>
+
+![Close-up of four demo agents at their isometric desks](docs/screenshots/office-agents.png)
 
 ![An agent’s terminal output in the read-only demo](docs/screenshots/conversation.png)
+
+![Desktop agent roster grouped by project, without optional artwork](docs/screenshots/roster.png)
 
 <img src="docs/screenshots/roster-mobile.png" alt="Agent roster on a mobile screen" width="390" />
 
