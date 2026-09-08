@@ -13,7 +13,7 @@
   <a href="#get-started">Get started</a> ·
   <a href="#a-small-office-with-a-lot-going-on">Explore the office</a> ·
   <a href="docs/guide.md">User guide</a> ·
-  <a href="#keep-the-office-lights-on">Sponsor me ♥</a>
+  <a href="https://donate.stripe.com/9AQbM3eOZ5q31heeUV">Sponsor me ♥</a>
 </p>
 
 <p align="center"><kbd>LOCAL FIRST</kbd> &nbsp; <kbd>CODEX + CLAUDE</kbd> &nbsp; <kbd>BUN + PHASER</kbd> &nbsp; <a href="LICENSE">ISC source license</a></p>
@@ -114,14 +114,13 @@ read-only mode still exposes private terminal output. [Security and trust model 
 
 ## Keep the office lights on
 
-[![Sponsor me — keep the office lights on. Support @montagao.](docs/art/sponsor.png)](docs/sponsorship.md)
+[![Sponsor me — keep the office lights on. Support @montagao.](docs/art/sponsor.png)](https://donate.stripe.com/9AQbM3eOZ5q31heeUV)
 
 I’m building Herdr Story to make running a bunch of coding agents feel a little more human.
-If you’d like to support its development, **[sponsor me →](docs/sponsorship.md)**.
+If you’d like to support its development, **[sponsor me →](https://donate.stripe.com/9AQbM3eOZ5q31heeUV)**.
 Stars, thoughtful bug reports, and contributions help too.
 
-<sub>GitHub Sponsors for @montagao is being set up. The card links to the sponsorship page;
-donations aren’t live yet.</sub>
+<sub>One-time donation via Stripe. Defaults to US$2; you can change the amount at checkout.</sub>
 
 ## Build something for the studio
 
