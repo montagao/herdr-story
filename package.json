@@ -61,7 +61,7 @@
   "type": "module",
   "private": true,
   "dependencies": {
-    "markdown-it": "^15.0.1",
+    "markdown-it": "^15.0.2",
     "phaser": "^4.2.1",
     "ws": "^8.21.3"
   },
