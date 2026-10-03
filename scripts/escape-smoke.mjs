@@ -68,7 +68,7 @@ try {
   }
   await page.locator('#studio-dock [data-page="boards"]').click();
   await page.locator('#studio-panel [data-tab="journal"]').click();
-  assert.equal(await page.evaluate(() => document.activeElement === document.body), true, 'Tab redraw reproduces lost focus');
+  await blur();   // a tab click keeps focus on the tab now; Escape must still close with focus outside the window
   await escape(); assert(await page.locator('#studio-panel').isHidden());
 
   await page.locator('#studio-dock [data-page="journal"]').click();

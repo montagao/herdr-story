@@ -1,3 +1,4 @@
+import { billingLabel, journalCategory, journalMoneyKind } from '../shared/billing';
 import { recapMoney, type RecapMoney } from '../shared/recap-money';
 import { janitorKey, JANITOR_WIDTH, JANITOR_HEIGHT } from './scenes/janitor-art';
 import type { PaymentSummary } from './payment-details';
@@ -9,16 +10,20 @@ import { settings } from './settings';
 import { agentKind, type AgentInfo } from '../shared/types';
 import { studioIcon } from './icons';
 import { renderMarkdown } from './markdown';
+import { gameCurrency } from './currency';
 import { handleOf } from './feed/feed';
 import { BOARD_COLORS, employeeName, goalProgress, projectKey, projectName, safeArtifactUrl, type Employee, type JournalEntry, type JournalPage, type JournalPageQuery, type Milestone, type ProjectBoard, type StudioState } from '../shared/studio';
 import type { OfficeClient } from './net/office-client';
 import type { OfficeScene } from './scenes/OfficeScene';
 import { avatarCanvas } from './feed/avatar';
+import { OUTFIT_COUNT, PORTRAIT_COUNT, wearableBody } from './sprites';
 import { WORK, WORK_KINDS } from './work';
-import { rankForLevel, tierForLevel } from './model/office';
+import { OfficeModel, rankForLevel, tierForLevel } from './model/office';
 import type { RoomItem } from '../shared/studio';
 import { Sweep } from './sweep';
 import { propName } from './decor';
+import { dismissOnBackdrop, reducedMotion, replayAnimation, snapShut } from './motion';
+import { audio } from './audio';
 
 type Page = 'boards' | 'people' | 'journal' | 'trophies' | 'room';
 const PAGES: [Page, string][] = [['boards', 'Whiteboards'], ['people', 'Employees'], ['journal', 'Journal'], ['trophies', 'Trophies'], ['room', 'Room']];
@@ -53,8 +58,56 @@ const netMoney = (entries: JournalEntry[]) => {
   const currencies = new Set(sales.map(e => e.currency || 'usd'));
   return sales.length && currencies.size === 1 ? { amount: sales.reduce((n, e) => n + e.amount!, 0), currency: [...currencies][0], count: sales.length } : sales.length ? { count: sales.length } : undefined;
 };
+/** Every step ticked: the milestone is ready to be completed. */
+const stepsDone = (goal: Milestone) => goal.checklist.length > 0 && goal.checklist.every(item => item.done);
 const field = (label: string, input: string) => `<label class="studio-field"><span>${label}</span>${input}</label>`;
-const artifact = (url: string) => safeArtifactUrl(url) ? `<a class="artifact-link" href="${esc(safeArtifactUrl(url))}" target="_blank" rel="noopener noreferrer">Open artifact ↗</a>` : '';
+const artifact = (url: string) => safeArtifactUrl(url) ? `<a class="artifact-link" href="${esc(safeArtifactUrl(url))}" target="_blank" rel="noopener noreferrer">Open artifact →</a>` : '';
+/** Play a one-shot class and take it off again. A panel kept for later is re-attached whole, and
+ *  a class left on it would run its animation a second time. */
+const flashing = new WeakMap<Element, number>();
+const flash = (el: Element | null | undefined, name: string, ms: number) => {
+  if (!el) return;
+  clearTimeout(flashing.get(el)); replayAnimation(el, name);
+  flashing.set(el, window.setTimeout(() => el.classList.remove(name), ms));
+};
+/** Where keyboard focus sits inside a panel, as a selector built from the data attributes on the
+ *  control and above it, so the same control can be found again once the panel is rebuilt. */
+const focusPath = (scope: Element) => {
+  const parts: string[] = [];
+  for (let el = document.activeElement; el && el !== scope; el = el.parentElement) {
+    const key = [...el.attributes].find(attr => attr.name.startsWith('data-'));
+    if (key) parts.unshift(`[${key.name}="${CSS.escape(key.value)}"]`);
+  }
+  return parts.join(' ');
+};
+const CONTROL = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary';
+const focusIn = (scope: Element, path: string) => {
+  const found = path ? scope.querySelector<HTMLElement>(path) : null;
+  const control = found?.matches(CONTROL) ? found : found?.querySelector<HTMLElement>(CONTROL);
+  control?.focus({ preventScroll: true });
+  return !!control;
+};
+/** How a toast looks and sounds: a passing note, a save that landed, something that failed, or an
+ *  earned moment. */
+type ToastTone = 'note' | 'ok' | 'error' | 'cheer';
+/** A bare function is an Undo. Anything else names its own button. */
+type ToastAction = (() => void | Promise<void>) | { label: string; run: () => void | Promise<void> };
+const TOAST_ICON: Partial<Record<ToastTone, string>> = { ok: 'check', error: 'alert', cheer: 'trophies' };
+/** What a finished save says. A reorder says nothing: the cards have already traded places. */
+const savedNote = (params: Record<string, unknown>, name: (id: unknown) => string | undefined) => {
+  const fresh = params.id === undefined;
+  switch (params.op) {
+    case 'room.save': return 'Office layout saved.';
+    case 'project.save': return 'Whiteboard updated.';
+    case 'goal.save': return fresh ? 'Milestone on the board.' : 'Milestone updated.';
+    case 'goal.remove': return 'Milestone removed.';
+    case 'goal.move': return '';
+    case 'entry.save': return fresh ? 'Memory filed.' : 'Memory updated.';
+    case 'entry.remove': return 'Memory removed.';
+    case 'employee.save': case 'employee.bind': return name(params.id) ? `${name(params.id)}’s record updated.` : 'Employee record updated.';
+    default: return 'Saved to your studio.';
+  }
+};
 
 export class Studio {
   private sweep: Sweep;
@@ -95,10 +148,16 @@ export class Studio {
   private historyQueryLoaded = false;
   private historyMoney?: RecapMoney;
   private historyMoneyRevision = -1;
-  private moneyCache = new Map<string, { money: RecapMoney; revision: number }>();
+  private moneyCache = new Map<string, { money: RecapMoney; revision: number; at: number }>();
+  private moneyPending = new Map<string, Promise<JournalPage>>();
   private historyLoading = false;
   private historyError = false;
   private historyPaint?: () => void;
+  /** Each journal or shelf panel's own row painter, so live work and late history land in the
+   *  panel on screen rather than in the last one built. */
+  private painters = new WeakMap<Element, { paint: () => void; refresh: () => void }>();
+  /** Set while live work is being painted in: rows that were not there before are marked. */
+  private arriving = false;
   private historyRequest = 0;
   private historySearchTimer?: number;
 
@@ -110,6 +169,14 @@ export class Studio {
   private recapSince = 0;
   /** The recap may show: set on load, on returning to the tab, or after a quiet spell. */
   private recapArmed = false;
+  private recapPainted = '';
+  private recapCount?: number;
+  /** The baseline the card last chimed for: it arrives with a sound once, not on every return from arranging. */
+  private recapChimed = -1;
+  /** A milestone being completed: its card gets stamped when the board is next drawn. */
+  private stamped?: { id: string; at: number };
+  /** The Drafts button has appeared behind the window and has not been pointed out yet. */
+  private draftsUnseen = false;
   private lastInteraction = Date.now();
   private hiddenSince = 0;
   private ackKey = 'herdr-story:recap-seen';
@@ -123,7 +190,7 @@ export class Studio {
   private saves: StudioSaves;
   private checkingSaves = false;
   private saveStatus = document.createElement('div');
-  private changeView?: { content: Element; view: Element };
+  private changeView?: { content: HTMLElement; view: Element };
   private readDrafts = new Map<string, { entry: JournalEntry; readAt?: number }>();
   private returnFocus?: HTMLElement;
   private toastTimer?: number;
@@ -135,8 +202,8 @@ export class Studio {
     this.saveStatus.id = 'studio-save-status'; this.saveStatus.hidden = true; this.saveStatus.setAttribute('role', 'status');
     document.body.append(this.saveStatus); this.saves.onChange = () => this.paintSaveStatus();
     this.sweep = new Sweep(client, {
-      janitorPortrait: () => {
-        const key = janitorKey('stand', 'se', 0);
+      janitorPortrait: (sweep?: number) => {
+        const key = sweep === undefined ? janitorKey('stand', 'se', 0) : janitorKey('sweep', 'se', sweep % 8);
         if (!this.office.textures?.exists(key)) return undefined;
         const canvas = document.createElement('canvas');
         canvas.width = JANITOR_WIDTH; canvas.height = JANITOR_HEIGHT;
@@ -164,7 +231,7 @@ export class Studio {
     this.drafts.onChange = () => this.paintDraftButton();
     addEventListener('pagehide', () => { this.captureDrafts(); this.drafts.flush(); });
     this.dock.id = 'studio-dock'; this.dock.setAttribute('aria-label', 'Studio controls');
-    this.dock.innerHTML = `<button type="button" data-arrange-room disabled title="Arrange furniture" aria-label="Arrange furniture"><i aria-hidden="true">${studioIcon('room', 18)}</i><span>Arrange furniture</span></button>` + PAGES.map(([page, name]) => `<button type="button" data-page="${page}" title="${name}"><i aria-hidden="true">${studioIcon(page, 18)}</i><span>${name}</span></button>`).join('') + `<button type="button" data-recap-open title="What happened since you last looked"><i aria-hidden="true">${studioIcon('recap', 18)}</i><span>Recap</span></button><button type="button" data-fit title="Show the whole office; click again to restore your view" aria-label="Show whole office" aria-pressed="false"><i aria-hidden="true">${studioIcon('fit', 18)}</i><span>Whole office</span></button>`;
+    this.dock.innerHTML = `<button type="button" data-arrange-room disabled title="Arrange furniture" aria-label="Arrange furniture"><i aria-hidden="true">${studioIcon('arrange', 18)}</i><span>Arrange furniture</span></button>` + PAGES.map(([page, name]) => `<button type="button" data-page="${page}" title="${name}"><i aria-hidden="true">${studioIcon(page, 18)}</i><span>${name}</span></button>`).join('') + `<button type="button" data-recap-open title="What happened since you last looked"><i aria-hidden="true">${studioIcon('recap', 18)}</i><span>Recap</span></button><button type="button" data-fit title="Show the whole office; click again to restore your view" aria-label="Show whole office" aria-pressed="false"><i aria-hidden="true">${studioIcon('fit', 18)}</i><span>Whole office</span></button>`;
     this.office.onViewModeChange = wholeOffice => {
       const button = this.dock.querySelector<HTMLButtonElement>('[data-fit]')!;
       button.setAttribute('aria-pressed', String(wholeOffice));
@@ -181,6 +248,11 @@ export class Studio {
     this.notice.id = 'studio-toast'; this.notice.hidden = true; this.notice.setAttribute('role', 'status');
     this.editBar.id = 'room-edit-bar'; this.editBar.hidden = true; this.editBar.setAttribute('role', 'region'); this.editBar.setAttribute('aria-label', 'Arrange furniture');
     this.recap.id = 'studio-recap'; this.recap.hidden = true;
+    // Built once. The card is repainted on every bridge update, and a press or focus must outlive that.
+    this.recap.innerHTML = '<button type="button" data-recap><span></span><b></b></button><button type="button" data-dismiss aria-label="Dismiss recap">×</button>';
+    this.recap.querySelector('[data-recap]')!.addEventListener('click', () => this.openRecap());
+    this.recap.querySelector('[data-dismiss]')!.addEventListener('click', () => { audio.blip('back'); this.acknowledgeRecap(); });
+    gameCurrency.onChange(() => { this.paintRecap(); this.liveRefresh(); });
     document.getElementById('game')?.append(this.dock, this.recap, this.editBar);
     document.body.append(this.root, this.notice);
     this.dock.addEventListener('click', event => {
@@ -192,7 +264,7 @@ export class Studio {
       else if (button?.hasAttribute('data-sweep')) this.sweep.open();
       else if (button?.hasAttribute('data-recap-open')) this.openRecap();
     });
-    this.root.addEventListener('click', event => { if (event.target === this.root) this.close(); });
+    dismissOnBackdrop(this.root, () => this.close());
     closeOnEscape(this.root, () => { if (!this.closeMenus(true)) this.close(); });
     for (const type of ['pointerdown', 'focusin'] as const) this.root.addEventListener(type, event => { if (!(event.target as HTMLElement).closest?.('.studio-menu')) this.closeMenus(); }, { capture: true });
     this.root.addEventListener('keydown', event => {
@@ -205,6 +277,7 @@ export class Studio {
     this.office.furnishings.onOpen = (page, project) => this.open(page, project);
     this.office.furnishings.onSelection = () => this.paintEditBar();
     this.office.furnishings.onChange = () => this.paintEditBar();
+    this.office.furnishings.onInvalid = (message) => this.toast(message, undefined, 'error');
     this.office.onSwapProjects = (a, b) => { if (!this.roomDraft) return; const order = this.roomDraft.order; const x = order.indexOf(a), y = order.indexOf(b); if (x < 0 || y < 0) return; [order[x], order[y]] = [order[y], order[x]]; this.office.previewProjectOrder(order); this.paintEditBar(); this.toast('Project areas swapped. Save layout to keep them.'); };
     const remember = (at: number) => { try { localStorage.setItem(this.seenKey, String(at)); } catch {} };
     const leave = () => {
@@ -249,18 +322,45 @@ export class Studio {
       this.importLegacy();
       // a first visit has nothing to look back on; every later load may
       if (this.recapSince) this.recapArmed = true; else this.acknowledgeRecap(false);
+      // Five small aggregates warm the common periods without downloading any history.
+      for (const { value } of RECAP_RANGES) {
+        const query = { since: recapStart(value, this.recapSince) };
+        void this.fetchRecapMoney(query, this.recapMoneyKey(query, value)).catch(() => {});
+      }
     }
     this.paintRecap();
-    // Never replace a draft or a focused filter when live work arrives.
-    const focused = document.activeElement;
-    if (changed && !this.busy && this.isOpen && !this.root.querySelector('.studio-editor')
-      && !(focused instanceof HTMLElement && this.root.contains(focused))) this.render();
+    if (changed && !this.busy) this.liveRefresh();
+  }
+  /** Live work arrived, or money changed its unit, while the window is up. The journal and the
+   *  shelf take new rows in place, so whatever is being read stays where it is; the other pages
+   *  are redrawn with their scroll and focus kept. Never under an editor, a draft list or an open
+   *  drop-down. */
+  private liveRefresh() {
+    const content = this.root.querySelector<HTMLElement>('.studio-content');
+    if (!this.isOpen || !content || content.querySelector('.studio-editor') || content.dataset.signature === 'drafts') return;
+    const list = this.painters.get(content);
+    if (list) { this.arriving = true; try { this.keepPlace(content, list.refresh); } finally { this.arriving = false; } }
+    else if (!content.querySelector('.studio-menu-list:not([hidden])')) this.redraw();
+  }
+  /** Repaint a list without moving the row being read. Chrome anchors the scroll itself; Safari
+   *  does not, so the first row in view is measured before and after. */
+  private keepPlace(content: HTMLElement, paint: () => void) {
+    const edge = content.getBoundingClientRect().top;
+    const anchor = content.scrollTop > 0 ? [...content.querySelectorAll<HTMLElement>('[data-journal-entry],[data-trophy]')].find(row => row.getBoundingClientRect().bottom > edge) : undefined;
+    const top = anchor?.getBoundingClientRect().top ?? 0;
+    paint();
+    if (anchor?.isConnected) content.scrollTop += anchor.getBoundingClientRect().top - top;
+  }
+  /** Rebuild the mounted page where it stands. render() puts focus back; this keeps the scroll too. */
+  private redraw() {
+    const scroll = this.root.querySelector('.studio-content')?.scrollTop ?? 0;
+    this.render(); this.root.querySelector('.studio-content')!.scrollTop = scroll;
   }
   /** Compact snapshots replace their current entries while retaining pages the user opened.
    * Retired ids prevent an old page from bringing deleted memories back; epochs handle restarts. */
   private acceptState(state: StudioState) {
     if (state.journalEpoch && this.historyEpoch !== state.journalEpoch) {
-      this.history.clear(); this.historyVersions.clear(); this.historyCursor = undefined; this.historyQuery = ''; this.historyRequest++; this.moneyCache.clear(); this.historyMoney = undefined; this.historyMoneyRevision = -1;
+      this.history.clear(); this.historyVersions.clear(); this.historyCursor = undefined; this.historyQuery = ''; this.historyRequest++; this.moneyCache.clear(); this.moneyPending.clear(); this.historyMoney = undefined; this.historyMoneyRevision = -1;
       this.historyLoading = false;
     }
     if (state.journalEpoch) this.historyEpoch = state.journalEpoch;
@@ -292,8 +392,24 @@ export class Studio {
         const page = await this.client.call('studio.journal', { ids: ids.slice(i, i + 200), limit: 200 }) as JournalPage;
         this.mergeHistory(page);
       }
-      if (paint && this.isOpen && !this.root.querySelector('.studio-editor') && !this.root.contains(document.activeElement)) this.render();
-    } catch (error) { this.toast(`Could not refresh changed history: ${(error as Error).message}`); }
+      if (paint) this.liveRefresh();
+    } catch (error) { this.toast(`Could not refresh changed history: ${(error as Error).message}`, undefined, 'error'); }
+  }
+  private recapMoneyKey(query: JournalPageQuery, range = this.recapRange) {
+    // Rolling windows share a last-known total while their exact new cutoff refreshes.
+    return JSON.stringify([range, range === 'look' || range === 'today' ? query.since : '', query.project || '', query.kind || '', query.search || '', !!query.trophies, query.read]);
+  }
+  private fetchRecapMoney(query: JournalPageQuery, key: string): Promise<JournalPage> {
+    const existing = this.moneyPending.get(key); if (existing) return existing;
+    const epoch = this.historyEpoch;
+    const pending = (this.client.call('studio.journal', { ...query, cursor: undefined, summaryOnly: true, moneySummary: true }) as Promise<JournalPage>).then(page => {
+      if (epoch === this.historyEpoch && (!epoch || page.epoch === epoch) && page.money) {
+        this.moneyCache.delete(key); this.moneyCache.set(key, { money: page.money, revision: page.revision, at: Date.now() });
+        if (this.moneyCache.size > 20) this.moneyCache.delete(this.moneyCache.keys().next().value!);
+      }
+      return page;
+    }).finally(() => { if (this.moneyPending.get(key) === pending) this.moneyPending.delete(key); });
+    this.moneyPending.set(key, pending); return pending;
   }
   private async loadHistory(query: JournalPageQuery, paint: () => void) {
     clearTimeout(this.historySearchTimer); this.historySearchTimer = undefined;
@@ -302,25 +418,28 @@ export class Studio {
     if (!this.state || this.historyLoading || this.historyPageCursor === null
       || (!query.moneySummary && (this.state.journalTotal ?? this.state.journal.length) <= this.state.journal.length)) return;
     this.historyLoading = true; this.historyError = false;
-    const request = ++this.historyRequest, queryKey = this.historyQuery;
+    const request = ++this.historyRequest;
     paint();
     try {
-      const page = await this.client.call('studio.journal', { ...query, cursor: this.historyPageCursor, limit: 100 }) as JournalPage;
-      if (request !== this.historyRequest || (this.historyEpoch && page.epoch !== this.historyEpoch)
-        || !this.state) return;
-      this.mergeHistory(page);
-      this.historyPageCursor = page.cursor; this.historyQueryLoaded = true;
-      if (page.money) {
-        this.historyMoney = page.money; this.historyMoneyRevision = page.revision;
-        this.moneyCache.delete(queryKey); this.moneyCache.set(queryKey, { money: page.money, revision: page.revision });
-        if (this.moneyCache.size > 20) this.moneyCache.delete(this.moneyCache.keys().next().value!);
-      }
-      if (!query.search && !query.project && !query.kind && !query.since && !query.trophies) this.historyCursor = page.cursor;
-      this.journalLimit += 100;
+      const summary = query.moneySummary ? this.fetchRecapMoney(query, this.recapMoneyKey(query)).then(page => {
+        if (request !== this.historyRequest || (this.historyEpoch && page.epoch !== this.historyEpoch)) return;
+        if (page.money) { this.historyMoney = page.money; this.historyMoneyRevision = page.revision; }
+        (this.historyPaint ?? paint)();
+      }) : Promise.resolve();
+      const history = (this.client.call('studio.journal', { ...query, moneySummary: false, cursor: this.historyPageCursor, limit: 100 }) as Promise<JournalPage>).then(page => {
+        if (request !== this.historyRequest || (this.historyEpoch && page.epoch !== this.historyEpoch)
+          || !this.state) return;
+        this.mergeHistory(page);
+        this.historyPageCursor = page.cursor; this.historyQueryLoaded = true;
+        if (!query.search && !query.project && !query.kind && !query.since && !query.trophies) this.historyCursor = page.cursor;
+        this.journalLimit += 100;
+        (this.historyPaint ?? paint)();
+      });
+      await Promise.all([history, summary]);
     } catch (error) {
       if (request === this.historyRequest) {
         this.historyError = true;
-        this.toast(`Could not load studio history: ${(error as Error).message}`);
+        this.toast(`Could not load studio history: ${(error as Error).message}`, undefined, 'error');
       }
     } finally {
       // Live studio updates can rebuild this panel while the request is in flight.
@@ -334,25 +453,46 @@ export class Studio {
       const counts = new Map<string, number>(JSON.parse(localStorage.getItem('herdr-story:shipped') || '[]'));
       const stats = new Map<string, unknown>(JSON.parse(localStorage.getItem('herdr-story:stats') || '[]'));
       const rows = this.agents.filter(a => (counts.get(a.pane_id) ?? 0) > 0).map(a => ({ pane: a.pane_id, shipped: counts.get(a.pane_id), stats: stats.get(a.pane_id) }));
-      if (rows.length) void this.client.call('studio.change', { op: 'legacy.import', rows }).catch(error => this.toast(error.message));
+      if (rows.length) void this.client.call('studio.change', { op: 'legacy.import', rows }).catch(error => this.toast(error.message, undefined, 'error'));
     } catch { /* An invalid old browser save must not interrupt the durable studio. */ }
   }
   private recapEntries() { return this.state?.journal.filter(e => !e.readAt && this.recapSince && e.at > this.recapSince) ?? []; }
   private paintRecap() {
     const entries = this.recapEntries();
+    // The bell counts what has landed since the last look, whether or not the card is showing.
+    const bell = this.dock.querySelector<HTMLElement>('[data-recap-open]')!;
+    if (entries.length) bell.dataset.count = entries.length > 99 ? '99+' : String(entries.length); else delete bell.dataset.count;
+    // It rings for work that lands on the floor; with the window up the dock is out of sight, and
+    // what is being counted is your own filing.
+    // The count is the news; the bell does not also ring for every entry, most of which have
+    // just had a card and a chord of their own.
+    if (this.initialized) this.recapCount = entries.length;
     this.recap.hidden = !entries.length || !this.recapArmed || !!this.roomDraft || !settings.value.recap;
     if (this.recap.hidden) return;
+    if (this.recapChimed !== this.recapSince) { this.recapChimed = this.recapSince; audio.blip('pop'); }
     const partial = (this.state?.journalTotal ?? 0) > (this.state?.journal.length ?? 0) && entries.length === this.state?.journal.length;
     const made = partial ? undefined : netMoney(entries);
-    const counts = { sale: 0, task: 0, trophy: 0, note: 0 };
-    for (const e of entries) counts[e.kind === 'milestone' || e.kind === 'release' ? 'trophy' : e.kind === 'sale' ? 'sale' : e.kind === 'task' ? 'task' : 'note']++;
+    const counts = { sale: 0, subscription: 0, task: 0, trophy: 0, note: 0 };
+    for (const e of entries) counts[e.kind === 'milestone' || e.kind === 'release' ? 'trophy' : e.kind === 'sale' ? journalCategory(e) as 'sale' | 'subscription' : e.kind === 'task' ? 'task' : 'note']++;
     const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-    const breakdown = [counts.sale && plural(counts.sale, 'payment'), counts.task && plural(counts.task, 'task'), counts.trophy && plural(counts.trophy, 'trophy', 'trophies'), counts.note && plural(counts.note, 'note')].filter(Boolean).join(', ');
+    const breakdown = [counts.subscription && plural(counts.subscription, 'subscription update'), counts.sale && plural(counts.sale, 'payment'), counts.task && plural(counts.task, 'task'), counts.trophy && plural(counts.trophy, 'trophy', 'trophies'), counts.note && plural(counts.note, 'note')].filter(Boolean).join(', ');
     const since = new Date(this.recapSince);
     const when = Date.now() - this.recapSince > 20 * 3600e3 ? since.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : since.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-    this.recap.innerHTML = `<button type="button" data-recap><span>WHILE YOU WERE AWAY · SINCE ${esc(when)}</span><b>${made?.amount ? `You made ${money(made.amount, made.currency)} · ` : ''}${entries.length}${partial ? '+' : ''} new ${entries.length === 1 ? 'memory' : 'memories'}${breakdown ? ` <small>${esc(breakdown)}</small>` : ''} <i>↗</i></b></button><button type="button" data-dismiss aria-label="Dismiss recap">×</button>`;
-    this.recap.querySelector('[data-recap]')?.addEventListener('click', () => this.openRecap());
-    this.recap.querySelector('[data-dismiss]')?.addEventListener('click', () => this.acknowledgeRecap());
+    const head = `WHILE YOU WERE AWAY · SINCE ${when}`;
+    const line = `${made?.amount ? `<i class="recap-coin" aria-hidden="true">${studioIcon('coin')}</i>You made ${esc(gameCurrency.display(made.amount, made.currency))} · ` : ''}${entries.length}${partial ? '+' : ''} new ${entries.length === 1 ? 'memory' : 'memories'}${breakdown ? ` <small>${esc(breakdown)}</small>` : ''} <i aria-hidden="true">→</i>`;
+    if (head + line === this.recapPainted) return;
+    this.recapPainted = head + line;
+    this.recap.querySelector('span')!.textContent = head; this.recap.querySelector('b')!.innerHTML = line;
+  }
+  /** The row menu's two quick edits: the same save the employee editor makes, with one field changed. */
+  pinEmployee(id: string, favorite: boolean) { return this.saveEmployee(id, { favorite }); }
+  renameEmployee(id: string, name: string) { return this.saveEmployee(id, { name: name.trim().slice(0, 40) }); }
+  private saveEmployee(id: string, changes: Partial<Pick<Employee, 'name' | 'favorite'>>) {
+    const person = this.state?.employees.find(e => e.id === id);
+    if (!person) { this.toast('That employee is no longer on the books.', undefined, 'error'); return Promise.resolve(false); }
+    // Records from before the outfit pool shrank still carry the short sheet, which the save
+    // validator refuses; send the outfit they are actually drawn in so a pin cannot fail on it.
+    return this.change({ op: 'employee.save', id: person.id, version: person.version, name: person.name, bio: person.bio, face: Math.min(person.face, PORTRAIT_COUNT - 1), body: Math.min(wearableBody(person.body), OUTFIT_COUNT - 1), favorite: person.favorite, ...changes });
   }
   /** Looking counts as caught up: the baseline moves to now and the card goes. */
   private acknowledgeRecap(paint = true) {
@@ -363,19 +503,18 @@ export class Studio {
   /** The journal from the last look on, whether or not the card is showing; the dock's Recap
    *  button and the card itself both land here. */
   openRecap() {
-    const since = this.recapSince, entries = this.recapEntries();
+    const since = this.recapSince;
     this.recapLook = since; this.recapRange = 'look';
     this.journalArchive = false; this.journalSince = recapStart('look', since); this.open('journal');
-    if (!entries.length) this.toast(`Nothing new since ${new Date(since).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}.`);
     this.acknowledgeRecap();
   }
   async openJournalEntry(id: string) {
     if (!this.state?.journal.some(entry => entry.id === id)) {
       try {
         this.mergeHistory(await this.client.call('studio.journal', { ids: [id], limit: 1 }) as JournalPage);
-      } catch (error) { this.toast(`Could not load this memory: ${(error as Error).message}`); return; }
+      } catch (error) { this.toast(`Could not load this memory: ${(error as Error).message}`, undefined, 'error'); return; }
     }
-    if (!this.state?.journal.some(entry => entry.id === id)) { this.toast('This journal entry is no longer available.'); return; }
+    if (!this.state?.journal.some(entry => entry.id === id)) { this.toast('This journal entry is no longer available.', undefined, 'error'); return; }
     this.journalProject = ''; this.journalKind = ''; this.journalSearch = ''; this.journalSince = 0;
     this.journalArchive = !!this.state.journal.find(entry => entry.id === id)?.readAt;
     const ordered = [...this.state.journal].sort((a, b) => b.at - a.at);
@@ -393,25 +532,68 @@ export class Studio {
   open(page: Page, id?: string) {
     this.sweep.close();
     this.beforeOpen?.();
-    if (!this.isOpen) this.returnFocus = document.activeElement as HTMLElement;
+    // Opened from the toast's own button, focus goes back to wherever it was before: the toast is gone.
+    if (!this.isOpen && !this.notice.contains(document.activeElement)) this.returnFocus = document.activeElement as HTMLElement;
     this.page = page;
     if (page === 'boards' && id) this.boardId = id;
     if (page === 'people' && id) this.personId = id;
     this.root.hidden = false; this.render(false);
     // Focus lands on the window itself: Escape and the tab trap work at once, without a ring on ×.
     this.root.querySelector<HTMLElement>('.studio-window')?.focus({ preventScroll: true });
+    if (!this.notice.hidden) this.placeToast();
   }
-  close() { this.captureDrafts(); this.cachePanel(); this.root.hidden = true; this.root.innerHTML = ''; this.returnFocus?.focus({ preventScroll: true }); }
-  toast(message: string, undo?: () => void | Promise<void>) {
-    this.notice.textContent = message; this.notice.hidden = false; this.notice.classList.toggle('has-action', !!undo);
-    if (undo) { const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Undo'; button.dataset.undo = ''; button.addEventListener('click', () => { button.disabled = true; void Promise.resolve(undo()).catch(error => this.toast((error as Error).message)); }); this.notice.append(button); }
-    clearTimeout(this.toastTimer); this.toastTimer = window.setTimeout(() => { this.notice.hidden = true; }, 6500);
+  close() {
+    const was = this.isOpen;
+    this.captureDrafts(); this.cachePanel(); if (was) snapShut(this.root.firstElementChild); this.root.hidden = true; this.root.innerHTML = ''; this.returnFocus?.focus({ preventScroll: true });
+    if (!was) return;
+    // Awards night or launch day has been waiting for the window to go, and takes over from a
+    // gold toast: left up, it would sit across the ceremony's caption.
+    if (this.notice.dataset.tone === 'cheer') { clearTimeout(this.toastTimer); this.notice.hidden = true; }
+    // The dock is back in view: move the toast clear of it, and point out a draft left behind.
+    if (!this.notice.hidden) this.placeToast();
+    this.paintDraftButton();
+    // A NEW ribbon on the shelf is for one visit.
+    this.panels.get('trophies')?.node.querySelectorAll('.trophy-card.new').forEach(card => card.classList.remove('new'));
   }
-  private change(input: Record<string, unknown> | (() => Record<string, unknown>), after?: () => void, options: { quiet?: boolean; lane?: string } = {}): Promise<boolean> {
-    if (!this.writable) { this.toast('This studio is read-only.'); return Promise.resolve(false); }
+  /** One line of news, shared with the roster. A passing note leaves after a couple of seconds;
+   *  one with a button, or one that says something failed, stays long enough to act on. */
+  toast(message: string, action?: ToastAction, tone: ToastTone = 'note') {
+    const run = typeof action === 'function' ? action : action?.run, icon = TOAST_ICON[tone];
+    this.notice.textContent = message; this.notice.dataset.tone = tone;
+    if (icon) this.notice.insertAdjacentHTML('afterbegin', `<i aria-hidden="true">${studioIcon(icon)}</i>`);
+    if (run) {
+      const button = document.createElement('button'); button.type = 'button';
+      if (typeof action === 'function') { button.textContent = 'Undo'; button.dataset.undo = ''; } else button.textContent = action!.label;
+      // Pressed once, the offer is spent: the toast goes rather than sit there with a dead button.
+      button.addEventListener('click', () => { clearTimeout(this.toastTimer); this.notice.hidden = true; void Promise.resolve(run()).catch(error => this.toast((error as Error).message, undefined, 'error')); });
+      this.notice.append(button);
+    }
+    this.notice.hidden = false; this.placeToast(); replayAnimation(this.notice, 'arrive');
+    // A finished milestone gets the game's own chord; without the sound pack, the saved blip.
+    if (tone === 'cheer') { if (!audio.play('ship')) audio.blip('ok'); } else audio.blip(tone === 'note' ? 'pop' : tone);
+    clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => { snapShut(this.notice); this.notice.hidden = true; }, run || tone === 'error' ? 6500 : Math.min(6500, Math.max(2600, 1000 + message.length * 60)));
+  }
+  /** Keep the toast off the controls: inside the foot of the studio window while that is up,
+   *  otherwise just above the arrange bar or the dock, centred on the office rather than the page. */
+  private placeToast() {
+    const style = this.notice.style, bar = this.editBar.hidden ? this.dock : this.editBar;
+    style.left = style.bottom = '';
+    const win = this.isOpen ? this.root.firstElementChild?.getBoundingClientRect() : undefined;
+    const box = win ?? (bar.getClientRects().length ? bar.getBoundingClientRect() : undefined);
+    if (!box) return;
+    // A bar that has only just appeared is measured mid-rise: take its resting place.
+    const rise = win ? 0 : Number.parseFloat(getComputedStyle(bar).translate.split(' ')[1]) || 0;
+    const half = this.notice.offsetWidth / 2, foot = win ? innerHeight - win.bottom + 12 : innerHeight - box.top + rise + 8;
+    style.left = `${Math.round(Math.min(innerWidth - half - 8, Math.max(half + 8, box.left + box.width / 2)))}px`;
+    // A tall arrange bar on a phone must not push the toast off the top of the screen.
+    style.bottom = `${Math.round(Math.max(8, Math.min(innerHeight - this.notice.offsetHeight - 8, foot)))}px`;
+  }
+  private change(input: Record<string, unknown> | (() => Record<string, unknown>), after?: () => void, options: { quiet?: boolean; lane?: string; painted?: boolean } = {}): Promise<boolean> {
+    if (!this.writable) { this.toast('This studio is read-only.', undefined, 'error'); return Promise.resolve(false); }
     let lane: string;
-    try { lane = options.lane ?? studioLane(typeof input === 'function' ? input() : input); } catch (error) { this.toast((error as Error).message); return Promise.resolve(false); }
-    const content = this.root.querySelector('.studio-content'), view = content?.firstElementChild;
+    try { lane = options.lane ?? studioLane(typeof input === 'function' ? input() : input); } catch (error) { this.toast((error as Error).message, undefined, 'error'); return Promise.resolve(false); }
+    const content = this.root.querySelector<HTMLElement>('.studio-content'), view = content?.firstElementChild;
     if (view) this.viewChanges.set(view, (this.viewChanges.get(view) ?? 0) + 1);
     const active = document.activeElement;
     const button = active instanceof HTMLButtonElement && this.root.contains(active) ? active : undefined;
@@ -420,7 +602,12 @@ export class Studio {
     const submitted = form ? JSON.stringify(this.drafts.snapshot(form)) : '';
     const receipt = form ? this.drafts.receipt(form) : undefined;
     const label = button?.textContent;
-    if (button) { button.disabled = true; button.textContent = 'Saving…'; }
+    // A disabled button gives up keyboard focus, so remember where it was for the redraw below.
+    const held = button && content?.contains(button) ? focusPath(content) : undefined;
+    if (button) button.disabled = true;
+    // A local save is back within a few frames, so only a slow one changes the label. Arrow
+    // buttons keep theirs: the word would shove their neighbours aside.
+    const slow = button && !button.hasAttribute('aria-label') ? window.setTimeout(() => { if (button.isConnected) button.textContent = 'Saving…'; }, 180) : undefined;
     if (submit) submit.disabled = true;
     this.changes++; this.busy = true; this.root.setAttribute('aria-busy', 'true');
     // Keep every click. Factories read the newest version after earlier edits have committed.
@@ -433,25 +620,35 @@ export class Studio {
         if (!this.office.model.studio || state.revision > this.office.model.studio.revision) this.office.model.setStudio(state);
         if (form) this.drafts.saved(form, submitted);
         after?.(); ok = true;
-        if (!options.quiet) this.toast(params.op === 'room.save' ? 'Office layout saved.' : 'Saved to your studio.');
+        // The view was painted ahead of the save and is now current: a tab roundtrip may keep it.
+        if (options.painted && content?.isConnected && content.firstElementChild === view) content.dataset.signature = this.panelSignature(this.page);
+        const note = options.quiet ? '' : savedNote(params, id => this.state?.employees.find(e => e.id === id)?.name);
+        if (note) this.toast(note, undefined, 'ok');
       } catch (error) {
         const message = (error as Error).message;
         const note = content?.isConnected && content.firstElementChild === view ? this.root.querySelector<HTMLElement>('.studio-form-note') : undefined;
         if (note) { note.textContent = message; note.setAttribute('role', 'alert'); }
-        this.toast(message);
+        this.toast(message, undefined, 'error');
       } finally {
         this.changes--; this.busy = this.changes > 0;
         if (view) { const left = (this.viewChanges.get(view) ?? 1) - 1; if (left) this.viewChanges.set(view, left); else this.viewChanges.delete(view); }
         if (!this.busy) this.root.removeAttribute('aria-busy');
+        clearTimeout(slow);
         if (button?.isConnected) { button.disabled = !this.writable; button.textContent = label ?? ''; }
         if (submit?.isConnected) submit.disabled = !this.writable;
-        // Do not reset filters, scroll, or a new editor opened while the request was pending.
-        if ((ok || typeof input === 'function') && !after && view && content?.isConnected && content.firstElementChild === view) this.changeView = { content, view };
+        // Do not reset filters, scroll, or a new editor opened while the request was pending. A
+        // view that already shows the result is only redrawn when the save failed.
+        const rebuild = ok ? !after && !options.painted : typeof input === 'function' && !after;
+        if (rebuild && view && content?.isConnected && content.firstElementChild === view) this.changeView = { content, view };
         if (this.changeView && !this.viewChanges.has(this.changeView.view)) {
           const refresh = this.changeView; this.changeView = undefined;
           if (this.isOpen && refresh.content.isConnected && refresh.content.firstElementChild === refresh.view) {
-            const scroll = refresh.content.scrollTop;
-            this.render(); this.root.querySelector('.studio-content')!.scrollTop = scroll;
+            // Out of an editor, the list comes back at the row that was opened.
+            const scroll = Number(refresh.content.dataset.listScroll ?? refresh.content.scrollTop);
+            this.render();
+            const next = this.root.querySelector<HTMLElement>('.studio-content')!;
+            next.scrollTop = scroll;
+            if (held !== undefined && document.activeElement === document.body && !focusIn(next, held)) this.root.querySelector<HTMLElement>('.studio-window')?.focus({ preventScroll: true });
           }
         }
       }
@@ -477,9 +674,9 @@ export class Studio {
           const state = await this.saves.check(item, retry);
           if (state && (!this.state || state.revision > this.state.revision)) { this.acceptState(state); this.office.model.setStudio(state); }
         }
-        this.toast(this.saves.pending.size ? 'Checked saved edits. Other saves are still pending.' : 'Saved edits confirmed.');
-        if (this.isOpen && !this.root.querySelector('.studio-editor')) this.render();
-      } catch (error) { this.toast((error as Error).message); }
+        this.toast(this.saves.pending.size ? 'Checked saved edits. Other saves are still pending.' : 'Saved edits confirmed.', undefined, this.saves.pending.size ? 'note' : 'ok');
+        if (this.isOpen && !this.root.querySelector('.studio-editor')) this.redraw();
+      } catch (error) { this.toast((error as Error).message, undefined, 'error'); }
       finally { this.checkingSaves = false; this.paintSaveStatus(); }
     };
     this.saveStatus.querySelector('[data-check-saves]')?.addEventListener('click', () => void check(false));
@@ -497,15 +694,24 @@ export class Studio {
   }
   private paintDraftButton() {
     let button = this.dock.querySelector<HTMLButtonElement>('[data-drafts]');
-    if (!button) { button = document.createElement('button'); button.type = 'button'; button.dataset.drafts = ''; this.dock.append(button); }
-    button.hidden = !this.drafts.records.size; button.textContent = `Drafts · ${this.drafts.records.size}`;
+    if (!button) {
+      button = document.createElement('button'); button.type = 'button'; button.dataset.drafts = ''; button.hidden = true; button.title = 'Unfinished edits kept on this device';
+      button.innerHTML = `<i aria-hidden="true">${studioIcon('note', 18)}</i><span></span>`; this.dock.append(button);
+    }
+    const count = this.drafts.records.size, label = `Drafts · ${count}`, text = button.querySelector('span')!;
+    if (text.textContent !== label) text.textContent = label;
+    // The button only exists while there is something to resume, so its arrival is pointed out
+    // once, when the dock can be seen: a draft is usually left while the window covers it.
+    if (button.hidden && count && this.initialized) this.draftsUnseen = true;
+    button.hidden = !count;
+    if (this.draftsUnseen && !this.isOpen) { this.draftsUnseen = false; if (count) flash(button, 'fresh', 700); }
   }
   private openDrafts() {
     this.captureDrafts(); this.open('journal');
     const content = this.root.querySelector<HTMLElement>('.studio-content')!;
-    content.dataset.signature = 'drafts';
+    content.dataset.signature = 'drafts'; this.painters.delete(content);
     content.innerHTML = `<div class="journal-heading"><div><small>KEPT ON THIS DEVICE</small><h2>Your unfinished edits.</h2><p>Resume a draft to review it before saving.</p></div></div>${[...this.drafts.records.values()].map(draft => `<article class="studio-draft-row"><div><b>${esc(draft.context.title)}</b><small>${esc(date(draft.at))}</small></div><button data-resume-draft="${esc(draft.key)}">Resume</button><button data-discard-draft="${esc(draft.key)}">Discard</button></article>`).join('') || '<p>No unfinished edits.</p>'}`;
-    content.querySelectorAll<HTMLElement>('[data-resume-draft]').forEach(button => button.addEventListener('click', () => { const draft = this.drafts.records.get(button.dataset.resumeDraft!); if (draft) void this.resumeDraft(draft).catch(error => this.toast((error as Error).message)); }));
+    content.querySelectorAll<HTMLElement>('[data-resume-draft]').forEach(button => button.addEventListener('click', () => { const draft = this.drafts.records.get(button.dataset.resumeDraft!); if (draft) void this.resumeDraft(draft).catch(error => this.toast((error as Error).message, undefined, 'error')); }));
     content.querySelectorAll<HTMLElement>('[data-discard-draft]').forEach(button => button.addEventListener('click', () => { this.drafts.remove(button.dataset.discardDraft!); this.panels.clear(); this.openDrafts(); }));
   }
   private async resumeDraft(draft: StudioDraft) {
@@ -553,29 +759,57 @@ export class Studio {
   }
   private render(force = true) {
     const samePage = this.mountedPage === this.page;
+    // A redraw of the same page puts keyboard focus back on the control it was on.
+    const old = this.root.querySelector('.studio-content');
+    const held = old?.contains(document.activeElement) ? samePage ? focusPath(old) : '' : undefined;
     this.cachePanel();
     const cached = this.panels.get(this.page), signature = this.panelSignature(this.page);
     const form = cached?.node.querySelector<HTMLFormElement>('form.studio-editor');
     const reuse = !force && cached && cached.node.dataset.historyPending !== 'true' && (cached.signature === signature || (form && this.drafts.dirty(form) && cached.node.dataset.context === this.panelSignature(this.page, true)));
     this.mountedPage = this.page;
-    const title = PAGES.find(([key]) => key === this.page)?.[1] ?? 'Studio';
-    this.root.innerHTML = `<div class="studio-window" tabindex="-1"><header class="studio-header"><span class="studio-mark" aria-hidden="true">${studioIcon(this.page, 18)}</span><b>${title}</b><small>${!this.state ? 'connecting…' : this.writable ? '' : 'read only'}</small><button type="button" data-close aria-label="Close studio">×</button></header>
-      <nav class="studio-tabs" aria-label="Studio pages">${PAGES.map(([key, name]) => `<button type="button" data-tab="${key}" aria-current="${key === this.page ? 'page' : 'false'}"><i aria-hidden="true">${studioIcon(key)}</i><span>${name}</span></button>`).join('')}</nav>
-      <div class="studio-content"></div></div>`;
-    this.root.querySelector('[data-close]')?.addEventListener('click', () => this.close());
-    this.root.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => button.addEventListener('click', () => { this.page = button.dataset.tab as Page; this.render(false); }));
-    const content = this.root.querySelector<HTMLElement>('.studio-content')!;
-    if (reuse) { content.replaceWith(cached.node); cached.node.scrollTop = cached.scroll; return; }
-    if (!samePage) { this.historyRequest++; this.historyLoading = false; }
-    content.dataset.signature = signature;
-    if (!this.state) { content.innerHTML = '<div class="studio-empty"><b>Connecting to your studio…</b><p>The office will appear when the local bridge is ready.</p></div>'; return; }
-    if (this.page === 'boards') this.boards(content);
-    else if (this.page === 'people') this.people(content);
-    else if (this.page === 'room') this.room(content);
-    else this.journal(content);
-    content.dataset.signature = this.panelSignature(this.page);
-    content.dataset.context = this.panelSignature(this.page, true);
-    this.paintAvatars();
+    const win = this.shell(), content = reuse ? cached.node : document.createElement('div');
+    win.append(content);
+    if (reuse) content.scrollTop = cached.scroll;
+    else {
+      content.className = 'studio-content';
+      if (!samePage) { this.historyRequest++; this.historyLoading = false; }
+      content.dataset.signature = signature;
+      if (!this.state) content.innerHTML = '<div class="studio-empty"><b>Connecting to your studio…</b><p>The office will appear when the local bridge is ready.</p></div>';
+      else {
+        if (this.page === 'boards') this.boards(content);
+        else if (this.page === 'people') this.people(content);
+        else if (this.page === 'room') this.room(content);
+        else this.journal(content);
+        content.dataset.signature = this.panelSignature(this.page);
+        content.dataset.context = this.panelSignature(this.page, true);
+        this.paintAvatars();
+      }
+    }
+    // A history page still loading, or money still converting, paints into the panel on screen.
+    this.historyPaint = this.painters.get(content)?.paint ?? this.historyPaint;
+    if (held !== undefined && !focusIn(content, held)) win.focus({ preventScroll: true });
+  }
+  /** The window's frame, built once per opening. Later renders retitle it and swap the page
+   *  beneath, so the landing is not replayed, a tab keeps its focus and the marker slides. */
+  private shell() {
+    let win = this.root.querySelector<HTMLElement>('.studio-window');
+    if (!win) {
+      this.root.innerHTML = `<div class="studio-window" tabindex="-1"><header class="studio-header"><span class="studio-mark" aria-hidden="true"></span><b></b><small></small><button type="button" data-close aria-label="Close studio">×</button></header>
+        <nav class="studio-tabs" aria-label="Studio pages">${PAGES.map(([key, name]) => `<button type="button" data-tab="${key}"><i aria-hidden="true">${studioIcon(key)}</i><span>${name}</span></button>`).join('')}<i class="tab-ink" aria-hidden="true"></i></nav></div>`;
+      win = this.root.querySelector<HTMLElement>('.studio-window')!;
+      win.querySelector('[data-close]')!.addEventListener('click', () => this.close());
+      win.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(button => button.addEventListener('click', () => {
+        if (this.page !== button.dataset.tab) audio.blip('tick');
+        this.page = button.dataset.tab as Page; this.render(false);
+      }));
+    }
+    const index = PAGES.findIndex(([key]) => key === this.page);
+    win.querySelector('.studio-mark')!.innerHTML = studioIcon(this.page, 18);
+    win.querySelector('.studio-header b')!.textContent = PAGES[index]?.[1] ?? 'Studio';
+    win.querySelector('.studio-header small')!.textContent = !this.state ? 'connecting…' : this.writable ? '' : 'read only';
+    win.querySelectorAll<HTMLElement>('[data-tab]').forEach(button => button.setAttribute('aria-current', button.dataset.tab === this.page ? 'page' : 'false'));
+    win.querySelector<HTMLElement>('.studio-tabs')!.style.setProperty('--tab', String(Math.max(0, index)));
+    return win;
   }
   private paintAvatars() {
     this.root.querySelectorAll<HTMLElement>('[data-portrait]').forEach(el => { const person = this.state?.employees.find(p => p.id === el.dataset.portrait); if (person) { const key = JSON.stringify([person.id, person.face, person.body, el.dataset.size]); if (el.dataset.appearance !== key) { el.replaceChildren(avatarCanvas(person.id, Number(el.dataset.size) || 30, person)); el.dataset.appearance = key; } } });
@@ -614,6 +848,7 @@ export class Studio {
       });
       for (const item of items) item.addEventListener('click', () => {
         const value = item.dataset.option!; close(true); if (value === host.dataset.value) return;
+        audio.blip('tick');
         host.dataset.value = value; for (const i of items) i.setAttribute('aria-selected', String(i === item));
         button.replaceChildren(...[...item.childNodes].map(node => node.cloneNode(true)));
         onPick[host.dataset.menu!]?.(value);
@@ -639,9 +874,12 @@ export class Studio {
   }
   private picked(form: HTMLFormElement) { return [...form.querySelectorAll<HTMLInputElement>('[name="contributor"]:checked')].map(el => el.value); }
   private editor(content: HTMLElement, title: string, body: string, onSave: (form: HTMLFormElement) => void) {
+    // Leaving the editor, by Back, Cancel or a save, puts the list back at the row it was opened from.
+    content.dataset.listScroll ??= String(content.scrollTop);
+    const leave = () => { const scroll = Number(content.dataset.listScroll); this.render(); this.root.querySelector('.studio-content')!.scrollTop = scroll; };
     content.innerHTML = `<div class="editor-heading"><button type="button" data-back>← Back</button><h2>${esc(title)}</h2></div><form class="studio-editor"><fieldset class="editor-fields"${this.writable ? '' : ' disabled'}>${body}<div class="studio-form-actions"><button type="submit" class="primary">Save changes</button><button type="button" data-cancel>Cancel</button></div></fieldset><p class="studio-form-note" aria-live="polite"></p></form>`;
-    content.querySelector('[data-back]')?.addEventListener('click', () => { this.drafts.capture(form); this.render(); });
-    content.querySelector('[data-cancel]')?.addEventListener('click', () => { this.drafts.discard(form); this.render(); });
+    content.querySelector('[data-back]')?.addEventListener('click', () => { this.drafts.capture(form); leave(); });
+    content.querySelector('[data-cancel]')?.addEventListener('click', () => { this.drafts.discard(form); leave(); });
     const form = content.querySelector<HTMLFormElement>('form')!;
     form.addEventListener('submit', event => { event.preventDefault(); onSave(form); });
     this.paintAvatars();
@@ -664,48 +902,89 @@ export class Studio {
     if (!board) { content.innerHTML = '<div class="studio-empty"><b>A whiteboard for every project</b><p>Hire an agent or start one in a project to get its first board.</p></div>'; return; }
     this.boardId = board.id;
     const next = board.goals.find(g => !g.done), complete = board.goals.filter(g => g.done).length;
+    // A tick saves without redrawing the board, so the editors read the board as it is now.
+    const live = () => this.state!.projects.find(p => p.id === board.id) ?? board;
     const working = [...new Set(this.agents.filter(a => projectKey(a) === board.id).map(a => a.employee_id).filter((id): id is string => !!id))];
     const addGoal = `<button type="button" class="primary" data-add-goal${this.writable ? '' : ' disabled'}>＋ ${board.goals.length ? 'New milestone' : 'Write the first milestone'}</button>`;
     content.innerHTML = `<div class="board-controls" style="--board-color:${board.color}">${this.projectMenu('project', 'Project whiteboard', board.id, undefined, 'board-switch')}<button type="button" data-customize${this.writable ? '' : ' disabled'}>Customize</button>${board.goals.length ? addGoal : ''}</div>
       <section class="project-whiteboard${board.goals.length ? '' : ' blank'}" style="--board-color:${board.color}"><div class="board-corner" aria-hidden="true"></div>
-        ${board.goals.length ? `<header><div><small>${next ? 'NEXT MILESTONE' : 'ALL DONE'}</small><h2>${esc(next?.title || 'Every milestone on this board is complete.')}</h2>${next ? `<div class="goal-meter board-meter" aria-hidden="true"><i style="width:${goalProgress(next)}%"></i></div>` : ''}</div><span class="board-tally"><b>${complete}</b> / ${board.goals.length}<small>done</small></span></header>`
+        ${board.goals.length ? `<header><div><small>${next ? 'NEXT MILESTONE' : 'ALL DONE'}</small><h2>${esc(next?.title || 'Every milestone on this board is complete.')}</h2>${next ? `<div class="goal-meter board-meter${stepsDone(next) ? ' full' : ''}" aria-hidden="true"><i style="width:${goalProgress(next)}%"></i></div>` : ''}</div><span class="board-tally"><b>${complete}</b> / ${board.goals.length}<small>done</small></span></header>`
         : `<header><div><small>THIS BOARD IS BLANK</small><h2>What is this team building toward?</h2><p>Add a milestone, break it into steps, and pick who is on it. Finished milestones go on the trophy shelf.</p></div>${addGoal}</header>`}
         ${board.notes ? `<p class="board-notes">${esc(board.notes)}</p>` : ''}<div class="board-team"><small>AT THEIR DESKS</small>${this.chips(working) || '<span>Nobody is at this project right now.</span>'}</div></section>
       <div class="milestone-list">${board.goals.map((goal, index) => this.goalCard(goal, index, board.goals.length)).join('')}</div>
       <section class="project-work"><h3>Recent work <small>${this.state!.journalSummary?.tasksByProject[board.id] ?? this.state!.journal.filter(e => e.project === board.id && e.kind === 'task').length} completed</small></h3>${this.entryRows(this.state!.journal.filter(e => e.project === board.id && e.kind === 'task').slice(-6).reverse()) || '<p>Nothing finished here yet. Completed agent work collects on this board while the bridge runs.</p>'}</section>`;
     this.bindMenus(content, { project: id => { this.boardId = id; this.render(); } });
-    content.querySelector('[data-customize]')?.addEventListener('click', () => this.editBoard(content, board));
-    content.querySelector('[data-add-goal]')?.addEventListener('click', () => this.editGoal(content, board));
+    content.querySelector('[data-customize]')?.addEventListener('click', () => this.editBoard(content, live()));
+    content.querySelector('[data-add-goal]')?.addEventListener('click', () => this.editGoal(content, live()));
     content.querySelectorAll<HTMLElement>('[data-goal]').forEach(card => {
       const goal = board.goals.find(g => g.id === card.dataset.goal)!;
-      card.querySelector('[data-edit-goal]')?.addEventListener('click', () => this.editGoal(content, board, goal));
-      card.querySelector('[data-complete]')?.addEventListener('click', () => void this.saveGoal(board.id, goal.id, current => ({ ...current, done: !current.done })));
+      card.querySelector('[data-edit-goal]')?.addEventListener('click', () => { const now = live(); this.editGoal(content, now, now.goals.find(g => g.id === goal.id) ?? goal); });
+      card.querySelector('[data-complete]')?.addEventListener('click', () => {
+        if (goal.done) void this.saveGoal(board.id, goal.id, current => ({ ...current, done: false }));
+        else this.finishGoal(goal.id, options => this.saveGoal(board.id, goal.id, current => ({ ...current, done: true }), options));
+      });
       card.querySelectorAll<HTMLInputElement>('[data-check]').forEach(box => box.addEventListener('change', () => {
-        const done = box.checked, id = goal.checklist[Number(box.dataset.check)].id;
-        box.closest('label')?.classList.toggle('checked', done);
+        const done = box.checked, id = goal.checklist[Number(box.dataset.check)].id, label = box.closest('label');
+        label?.classList.toggle('checked', done);
         const count = card.querySelectorAll('[data-check]:checked').length, total = goal.checklist.length;
-        const progress = Math.round(count / Math.max(1, total) * 100);
+        const progress = Math.round(count / Math.max(1, total) * 100), ready = count === total;
         const meter = card.querySelector<HTMLElement>('.goal-meter')!;
         meter.setAttribute('aria-valuenow', String(progress)); meter.querySelector<HTMLElement>('i')!.style.width = `${progress}%`;
         card.querySelector('[data-check-count]')!.textContent = `${count}/${total} steps`;
-        if (next?.id === goal.id) content.querySelector<HTMLElement>('.board-meter i')!.style.width = `${progress}%`;
-        void this.saveGoal(board.id, goal.id, current => ({ ...current, checklist: current.checklist.map(item => item.id === id ? { ...item, done } : item) })); }));
-      card.querySelectorAll<HTMLButtonElement>('[data-move]').forEach(button => button.addEventListener('click', () => void this.change(() => ({ op: 'goal.move', project: board.id, id: goal.id, version: this.state!.projects.find(p => p.id === board.id)!.version, direction: button.dataset.move }))));
+        const heading = next?.id === goal.id ? content.querySelector<HTMLElement>('.board-meter') : null;
+        if (heading) { heading.querySelector<HTMLElement>('i')!.style.width = `${progress}%`; heading.classList.toggle('full', ready); }
+        // The last step is the moment: the meter turns gold and the button asks to be pressed.
+        const finish = card.querySelector('[data-complete]');
+        card.classList.toggle('ready', ready); finish?.classList.toggle('primary', ready);
+        if (done) flash(label, 'ticked', 300);
+        if (done && ready) flash(finish, 'nudge', 700);
+        audio.blip(done && ready ? 'ok' : 'tick');
+        // The card already shows the tick, so the save neither redraws the board nor announces itself.
+        void this.saveGoal(board.id, goal.id, current => ({ ...current, checklist: current.checklist.map(item => item.id === id ? { ...item, done } : item) }), { quiet: true, painted: true }); }));
+      card.querySelectorAll<HTMLButtonElement>('[data-move]').forEach(button => button.addEventListener('click', () => {
+        const tops = new Map([...content.querySelectorAll<HTMLElement>('[data-goal]')].map(el => [el.dataset.goal!, el.getBoundingClientRect().top]));
+        void this.change(() => ({ op: 'goal.move', project: board.id, id: goal.id, version: this.state!.projects.find(p => p.id === board.id)!.version, direction: button.dataset.move }))
+          .then(ok => { if (ok) this.slideFrom(this.root.querySelectorAll<HTMLElement>('[data-goal]'), el => tops.get(el.dataset.goal!)); });
+      }));
     });
+    // A milestone finished a moment ago is stamped on the board that now shows it done.
+    const done = this.stamped && Date.now() - this.stamped.at < 5000 ? content.querySelector(`.completed[data-goal="${CSS.escape(this.stamped.id)}"]`) : null;
+    if (done) { this.stamped = undefined; flash(done, 'just-done', 900); flash(content.querySelector('.board-tally b'), 'just-done', 900); }
     this.bindEntries(); this.bindPeople();
   }
+  /** Things that have just changed places slide from where they were, a few steps, never a glide. */
+  private slideFrom(rows: Iterable<HTMLElement>, was: (el: HTMLElement) => number | undefined) {
+    if (reducedMotion()) return;
+    for (const el of rows) {
+      const from = was(el), to = el.getBoundingClientRect().top;
+      if (from !== undefined && Math.abs(from - to) > 1 && Math.min(from, to) < innerHeight) el.animate([{ translate: `0 ${from - to}px` }, { translate: '0 0' }], { duration: 140, easing: 'steps(4,end)' });
+    }
+  }
   private goalCard(goal: Milestone, index: number, total: number) {
-    return `<article class="milestone-card${goal.done ? ' completed' : ''}" data-goal="${esc(goal.id)}"><div class="milestone-top"><span class="milestone-number">${goal.done ? '✓' : String(index + 1).padStart(2, '0')}</span><div><h3>${esc(goal.title)}</h3><small>${goal.done ? `Completed ${date(goal.completedAt!)}` : goal.due ? `Due ${esc(goal.due)}` : 'No deadline'} · <span data-check-count>${goal.checklist.filter(i => i.done).length}/${goal.checklist.length} steps</span></small></div><button type="button" data-edit-goal>${this.writable ? 'Edit' : 'View'}</button></div>
+    const ready = !goal.done && stepsDone(goal);
+    return `<article class="milestone-card${goal.done ? ' completed' : ready ? ' ready' : ''}" data-goal="${esc(goal.id)}"><div class="milestone-top"><span class="milestone-number">${goal.done ? studioIcon('check') : String(index + 1).padStart(2, '0')}</span><div><h3>${esc(goal.title)}</h3><small>${goal.done ? `Completed ${date(goal.completedAt!)}` : goal.due ? `Due ${esc(goal.due)}` : 'No deadline'} · <span data-check-count>${goal.checklist.filter(i => i.done).length}/${goal.checklist.length} steps</span></small></div><button type="button" data-edit-goal>${this.writable ? 'Edit' : 'View'}</button></div>
       ${goal.notes ? `<p class="milestone-notes">${esc(goal.notes)}</p>` : ''}<div class="goal-meter" role="progressbar" aria-label="Checklist progress" aria-valuenow="${goalProgress(goal)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${goalProgress(goal)}%"></i></div>
       <div class="goal-checklist">${goal.checklist.map((item, i) => `<label class="${item.done ? 'checked' : ''}"><input type="checkbox" data-check="${i}"${checked(item.done)}${this.writable && !goal.done ? '' : ' disabled'}><span>${esc(item.text)}</span></label>`).join('')}</div>
-      <div class="goal-contributors">${this.chips(goal.contributors)}${artifact(goal.url)}</div><div class="milestone-actions"><button type="button" data-complete${this.writable ? '' : ' disabled'}>${goal.done ? 'Reopen milestone' : 'Complete milestone'}</button><span></span><button type="button" data-move="up" aria-label="Move milestone up"${this.writable && index > 0 ? '' : ' disabled'}>↑</button><button type="button" data-move="down" aria-label="Move milestone down"${this.writable && index < total - 1 ? '' : ' disabled'}>↓</button></div></article>`;
+      <div class="goal-contributors">${this.chips(goal.contributors)}${artifact(goal.url)}</div><div class="milestone-actions"><button type="button" data-complete${ready ? ' class="primary"' : ''}${this.writable ? '' : ' disabled'}>${goal.done ? 'Reopen milestone' : 'Complete milestone'}</button><span></span><button type="button" data-move="up" aria-label="Move milestone up"${this.writable && index > 0 ? '' : ' disabled'}>↑</button><button type="button" data-move="down" aria-label="Move milestone down"${this.writable && index < total - 1 ? '' : ' disabled'}>↓</button></div></article>`;
   }
-  private saveGoal(project: string, id: string, update: (goal: Milestone) => Milestone) {
+  private saveGoal(project: string, id: string, update: (goal: Milestone) => Milestone, options: { quiet?: boolean; painted?: boolean } = {}) {
     return this.change(() => {
       const goal = this.state?.projects.find(p => p.id === project)?.goals.find(g => g.id === id);
       if (!goal) throw new Error('This milestone was removed.');
       return { ...update(goal), op: 'goal.save', project };
+    }, undefined, options);
+  }
+  /** Completing a milestone is the one save in this window that was promised a reward: its card
+   *  is stamped when the board is redrawn, the toast is gold and it gets the chord. */
+  private finishGoal(id: string | undefined, save: (options: { quiet: boolean }) => Promise<boolean>) {
+    if (id) this.stamped = { id, at: Date.now() };
+    void save({ quiet: true }).then(ok => {
+      if (ok) this.cheer('Milestone complete! It’s on the trophy shelf.');
+      else if (this.stamped?.id === id) this.stamped = undefined;
     });
+  }
+  private cheer(message: string) {
+    this.toast(message, this.page === 'trophies' ? undefined : { label: 'See shelf', run: () => this.open('trophies') }, 'cheer');
   }
   private editBoard(content: HTMLElement, board: ProjectBoard) {
     const form = this.editor(content, 'Customize whiteboard', field('Board name', `<input name="name" maxlength="60" required value="${esc(board.name)}">`) + field('Team notes', `<textarea name="notes" rows="4" maxlength="4000" placeholder="What matters to this team?">${esc(board.notes)}</textarea>`) + `<fieldset class="board-color-picker"><legend>Marker color</legend>${BOARD_COLORS.map((color, i) => `<label style="--swatch:${color}"><input type="radio" name="color" value="${color}"${checked(board.color === color)}><span>${['Ocean', 'Fern', 'Copper', 'Lilac', 'Berry', 'Slate'][i]}</span></label>`).join('')}</fieldset>`, form => {
@@ -717,7 +996,9 @@ export class Studio {
     const form = this.editor(content, goal ? 'Edit milestone' : 'New team milestone', field('Milestone', `<input name="title" required maxlength="120" placeholder="Ship the first public beta" value="${esc(goal?.title)}">`) + field('Notes', `<textarea name="notes" maxlength="4000" rows="3" placeholder="What does success look like?">${esc(goal?.notes)}</textarea>`) + `<div class="editor-pair">${field('Due date · optional', `<input type="date" name="due" value="${esc(goal?.due)}">`)}${field('Artifact link · optional', `<input type="url" name="url" maxlength="2000" placeholder="https://…" value="${esc(goal?.url)}">`)}</div><fieldset class="checklist-editor"><legend>Steps toward the milestone</legend><div data-checklist></div><button type="button" data-add-step>＋ Add step</button></fieldset>${this.contributors(goal?.contributors ?? [])}<label class="studio-check"><input type="checkbox" name="done"${checked(!!goal?.done)}>Milestone complete · display on the trophy shelf</label>`, form => {
       const data = new FormData(form);
       const checklist = [...form.querySelectorAll<HTMLElement>('.checklist-edit-row')].map(row => ({ id: row.dataset.id!, text: row.querySelector<HTMLInputElement>('[data-step-text]')!.value, done: row.querySelector<HTMLInputElement>('[data-step-done]')!.checked })).filter(item => item.text.trim());
-      void this.change({ op: 'goal.save', project: board.id, id: goal?.id, version: goal?.version, title: data.get('title'), notes: data.get('notes'), due: data.get('due'), url: data.get('url'), checklist, contributors: this.picked(form), done: data.has('done') });
+      const params = { op: 'goal.save', project: board.id, id: goal?.id, version: goal?.version, title: data.get('title'), notes: data.get('notes'), due: data.get('due'), url: data.get('url'), checklist, contributors: this.picked(form), done: data.has('done') };
+      if (data.has('done') && !goal?.done) this.finishGoal(goal?.id, options => this.change(params, undefined, options));
+      else void this.change(params);
     });
     const rows = form.querySelector<HTMLElement>('[data-checklist]')!;
     const add = (item = { id: crypto.randomUUID() as string, text: '', done: false }, focus = false) => {
@@ -738,22 +1019,35 @@ export class Studio {
     if (!person) { content.innerHTML = '<div class="studio-empty"><b>Your team’s careers begin here.</b><p>Hire an agent to create an employee profile.</p></div>'; return; }
     this.personId = person.id;
     content.innerHTML = `<div class="people-layout"><aside class="employee-list" aria-label="Employees">${list.map(p => { const active = this.agents.some(a => a.employee_id === p.id); return `<button type="button" data-employee="${p.id}" aria-current="${p.id === person.id ? 'true' : 'false'}"><span data-portrait="${p.id}"></span><span><b>${p.favorite ? '★ ' : ''}${esc(p.name)}</b><small>${esc(active ? this.handle(p.id) : 'Career saved')} · ${p.shipped} done</small></span></button>`; }).join('')}</aside><div class="employee-detail"></div></div>`;
-    content.querySelectorAll<HTMLButtonElement>('[data-employee]').forEach(button => button.addEventListener('click', () => { this.personId = button.dataset.employee!; this.render(); }));
+    const roster = content.querySelector<HTMLElement>('.employee-list')!;
+    // Opened for someone far down a long staff list: bring them into view. Only the list moves;
+    // scrollIntoView would also scroll the page beneath the record.
+    const current = roster.querySelector<HTMLElement>('[aria-current="true"]');
+    if (current) {
+      const box = roster.getBoundingClientRect(), at = current.getBoundingClientRect();
+      roster.scrollBy(Math.min(0, at.left - box.left) + Math.max(0, at.right - box.right), Math.min(0, at.top - box.top) + Math.max(0, at.bottom - box.bottom));
+    }
+    content.querySelectorAll<HTMLButtonElement>('[data-employee]').forEach(button => button.addEventListener('click', () => {
+      const left = roster.scrollLeft, top = roster.scrollTop;
+      this.personId = button.dataset.employee!; this.render();
+      this.root.querySelector<HTMLElement>('.employee-list')?.scrollTo(left, top);
+    }));
     const detail = content.querySelector<HTMLElement>('.employee-detail')!;
-    const active = this.agents.filter(a => a.employee_id === person.id), level = 1 + Math.floor(person.shipped / 3);
+    const active = this.agents.filter(a => a.employee_id === person.id), step = OfficeModel.PER_LEVEL;
+    const level = 1 + Math.floor(person.shipped / step), inLevel = person.shipped % step;
     const achievements = this.state!.journalSummary?.achievementsByEmployee[person.id] ?? this.state!.journal.filter(e => e.contributors.includes(person.id) && ['milestone', 'release'].includes(e.kind)).length;
-    detail.innerHTML = `<div class="employee-passport"><span data-profile-preview></span><div><small>EMPLOYEE RECORD · SINCE ${new Date(person.createdAt).toLocaleDateString()}</small><h2>${esc(person.name)}</h2><p><span class="level-badge" data-level-tier="${tierForLevel(level)}">${rankForLevel(level)} · Lv ${level}</span> · ${esc(person.kind)}</p><div class="career-totals"><b>${person.shipped}<small>completed tasks</small></b><b>${achievements}<small>team achievements</small></b></div></div></div><div class="career-stats">${WORK_KINDS.map(stat => `<span>${WORK[stat].stat}<b>${person.stats[stat]}</b></span>`).join('')}</div>
-      <form class="studio-editor employee-editor"><fieldset class="editor-fields"${this.writable ? '' : ' disabled'}>${field('Employee name', `<input name="name" required maxlength="40" value="${esc(person.name)}">`)}${field('Their story', `<textarea name="bio" maxlength="1000" rows="3" placeholder="Our veteran debugger. Here since the first release.">${esc(person.bio)}</textarea>`)}<div class="appearance-controls"><fieldset><legend>Portrait</legend><button type="button" data-appearance="face" data-step="-1" aria-label="Previous portrait">←</button><span data-face-count></span><button type="button" data-appearance="face" data-step="1" aria-label="Next portrait">→</button></fieldset><fieldset><legend>Outfit</legend><button type="button" data-appearance="body" data-step="-1" aria-label="Previous outfit">←</button><span data-body-count></span><button type="button" data-appearance="body" data-step="1" aria-label="Next outfit">→</button></fieldset></div><input type="hidden" name="face" value="${person.face}"><input type="hidden" name="body" value="${person.body}"><label class="studio-check"><input type="checkbox" name="favorite"${checked(person.favorite)}>★ Pin this employee in the office and roster</label><div class="studio-form-actions"><button type="submit" class="primary">Save employee</button>${active.map(a => `<button type="button" data-talk="${esc(a.pane_id)}">Talk to ${esc(person.name)}</button>`).join('')}</div></fieldset><p class="studio-form-note" aria-live="polite"></p></form>
+    detail.innerHTML = `<div class="employee-passport"><span data-profile-preview></span><div><small>EMPLOYEE RECORD · SINCE ${new Date(person.createdAt).toLocaleDateString()}</small><h2>${esc(person.name)}</h2><p><span class="level-badge" data-level-tier="${tierForLevel(level)}">${rankForLevel(level)} · Lv ${level}</span> · ${esc(person.kind)}</p><div class="passport-xp" data-level-tier="${tierForLevel(level)}"><div class="xp-track" title="${inLevel} of ${step} shipments toward Lv ${level + 1}"><i style="width:${Math.round(inLevel / step * 100)}%"></i></div><small>${step - inLevel} more to Lv ${level + 1}</small></div><div class="career-totals"><b>${person.shipped}<small>completed tasks</small></b><b>${achievements}<small>team achievements</small></b></div></div></div><div class="career-stats">${WORK_KINDS.map(stat => `<span>${WORK[stat].stat}<b>${person.stats[stat]}</b></span>`).join('')}</div>
+      <form class="studio-editor employee-editor"><fieldset class="editor-fields"${this.writable ? '' : ' disabled'}>${field('Employee name', `<input name="name" required maxlength="40" value="${esc(person.name)}">`)}${field('Their story', `<textarea name="bio" maxlength="1000" rows="3" placeholder="Our veteran debugger. Here since the first release.">${esc(person.bio)}</textarea>`)}<div class="appearance-controls"><fieldset><legend>Portrait</legend><button type="button" data-appearance="face" data-step="-1" aria-label="Previous portrait">←</button><span data-face-count></span><button type="button" data-appearance="face" data-step="1" aria-label="Next portrait">→</button></fieldset><fieldset><legend>Outfit</legend><button type="button" data-appearance="body" data-step="-1" aria-label="Previous outfit">←</button><span data-body-count></span><button type="button" data-appearance="body" data-step="1" aria-label="Next outfit">→</button></fieldset></div><input type="hidden" name="face" value="${person.face}"><input type="hidden" name="body" value="${wearableBody(person.body)}"><label class="studio-check"><input type="checkbox" name="favorite"${checked(person.favorite)}>★ Pin this employee in the office and roster</label><div class="studio-form-actions"><button type="submit" class="primary">Save employee</button>${active.map(a => `<button type="button" data-talk="${esc(a.pane_id)}">Talk to ${esc(person.name)}</button>`).join('')}</div></fieldset><p class="studio-form-note" aria-live="polite"></p></form>
       <details class="career-continue"><summary>Continue this career with another agent</summary><p>A new session can use this employee’s name, appearance, and career. Other saved careers stay in the employee list.</p>${field('Agent at a desk', `<select data-bind-agent>${this.agents.map(a => `<option value="${esc(a.pane_id)}">${esc(employeeName(a))} · ${esc(a.pane_id)}</option>`).join('')}</select>`)}<button type="button" data-bind${this.writable && this.agents.length ? '' : ' disabled'}>Use this employee for that agent</button></details><section class="employee-memories"><h3>Career journal</h3>${this.entryRows(this.state!.journal.filter(e => e.contributors.includes(person.id)).slice(-10).reverse()) || '<p>Completed work and team milestones will become part of this career.</p>'}</section>`;
     const form = detail.querySelector<HTMLFormElement>('form')!;
     const preview = () => {
       const face = Number((form.elements.namedItem('face') as HTMLInputElement).value), body = Number((form.elements.namedItem('body') as HTMLInputElement).value);
       detail.querySelector('[data-profile-preview]')!.replaceChildren(avatarCanvas(person.id, 108, { face, body }));
-      detail.querySelector('[data-face-count]')!.textContent = `${face + 1} / 36`; detail.querySelector('[data-body-count]')!.textContent = `${body + 1} / 26`;
+      detail.querySelector('[data-face-count]')!.textContent = `${face + 1} / ${PORTRAIT_COUNT}`; detail.querySelector('[data-body-count]')!.textContent = `${body + 1} / ${OUTFIT_COUNT}`;
     };
     preview();
     form.querySelectorAll<HTMLButtonElement>('[data-appearance]').forEach(button => button.addEventListener('click', () => {
-      const kind = button.dataset.appearance!, input = form.elements.namedItem(kind) as HTMLInputElement, count = kind === 'face' ? 36 : 26;
+      const kind = button.dataset.appearance!, input = form.elements.namedItem(kind) as HTMLInputElement, count = kind === 'face' ? PORTRAIT_COUNT : OUTFIT_COUNT;
       input.value = String((Number(input.value) + Number(button.dataset.step) + count) % count); preview();
     }));
     form.addEventListener('submit', event => { event.preventDefault(); const data = new FormData(form); void this.change({ op: 'employee.save', id: person.id, version: person.version, name: data.get('name'), bio: data.get('bio'), face: Number(data.get('face')), body: Number(data.get('body')), favorite: data.has('favorite') }); });
@@ -770,16 +1064,17 @@ export class Studio {
     const clock = (at: number) => new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
     return entries.map(raw => {
       const entry = this.readView(raw);
+      const category = journalCategory(entry);
       const project = this.state!.projects.find(p => p.id === entry.project);
       const people = entry.contributors.map(id => this.state!.employees.find(e => e.id === id)).filter((p): p is Employee => !!p);
       const long = entry.notes.length > 260 || entry.notes.split('\n').length > 4;
       const who = people.length ? `<span class="entry-who">${people.map(p => { const tag = this.tag(p); return `<button type="button" class="entry-person" data-person="${esc(p.id)}">${esc(p.name)}${tag ? ` <small>${esc(tag)}</small>` : ''}</button>`; }).join('')}</span>` : '';
       const where = project ? `<span class="entry-project"><i class="project-swatch" style="background:${esc(project.color)}"></i>${esc(project.name)}</span>` : entry.kind === 'sale' ? `<span class="entry-project">${entry.source === 'revenuecat' ? 'RevenueCat' : 'Stripe'}</span>` : '';
       const duration = entry.minutes ? (entry.minutes >= 60 ? `${Math.floor(entry.minutes / 60)}h ${entry.minutes % 60}m` : `${entry.minutes} min`) : '';
-      const amount = entry.kind === 'sale' && typeof entry.amount === 'number' ? `<b class="entry-amount ${entry.amount < 0 ? 'down' : 'up'}">${money(entry.amount, entry.currency, true)}</b>` : '';
+      const amount = category === 'sale' && typeof entry.amount === 'number' ? `<b class="entry-amount ${entry.amount < 0 ? 'down' : 'up'}">${money(entry.amount, entry.currency, true)}</b>` : '';
       const lead = people.length === 1 && entry.kind === 'task' ? `<span class="entry-face" data-portrait="${esc(people[0].id)}" data-size="34"></span>`
-        : `<span class="journal-glyph ${entry.kind}" aria-hidden="true">${studioIcon(entry.kind === 'task' ? 'check' : entry.kind === 'note' ? 'note' : entry.kind === 'sale' ? 'coin' : 'trophies', 18)}</span>`;
-      return `<article class="journal-row kind-${entry.kind}" data-journal-entry="${esc(entry.id)}"${entry.kind === 'sale' && entry.moneyId ? ` data-payment-row="${esc(entry.id)}"` : ''}${entry.source === 'agent' ? ` data-memory-chat="${esc(entry.id)}"` : ''}>${lead}<div class="entry-body"><button type="button" class="entry-title" data-entry="${entry.id}">${esc(entry.title)}</button><small class="entry-meta">${who}${where}</small>${entry.notes ? `<div class="entry-notes${long ? ' clamped' : ''}">${this.cachedMarkdown(entry.notes)}</div>${long ? '<button type="button" class="entry-more" data-more-notes aria-expanded="false">Show more</button>' : ''}` : ''}${artifact(entry.url)}</div><aside class="entry-aside"><time datetime="${new Date(entry.at).toISOString()}">${clock(entry.at)}</time>${amount}${duration ? `<span>${esc(duration)}</span>` : ''}${entry.model ? `<span class="entry-model">${esc(entry.model)}</span>` : ''}<span class="entry-kind">${KIND[entry.kind]}</span><button type="button" class="entry-read" data-read-entry="${esc(entry.id)}"${this.writable && !this.readDrafts.has(entry.id) ? '' : ' disabled'}>${this.readDrafts.has(entry.id) ? 'Saving…' : entry.readAt ? 'Mark unread' : 'Mark read & archive'}</button>${entry.source === 'agent' || entry.kind === 'sale' ? `<button type="button" class="entry-edit" data-edit-entry="${esc(entry.id)}" aria-label="Edit memory: ${esc(entry.title)}">Edit memory</button>` : ''}</aside></article>`;
+        : `<span class="journal-glyph ${category}" aria-hidden="true">${studioIcon(entry.kind === 'task' ? 'check' : entry.kind === 'note' || category === 'subscription' ? 'note' : entry.kind === 'sale' ? 'coin' : 'trophies', 18)}</span>`;
+      return `<article class="journal-row kind-${category}" data-journal-entry="${esc(entry.id)}"${category === 'sale' && entry.moneyId ? ` data-payment-row="${esc(entry.id)}"` : ''}${entry.source === 'agent' ? ` data-memory-chat="${esc(entry.id)}"` : ''}>${lead}<div class="entry-body"><button type="button" class="entry-title" data-entry="${entry.id}">${esc(entry.title)}</button><small class="entry-meta">${who}${where}</small>${entry.notes ? `<div class="entry-notes${long ? ' clamped' : ''}">${this.cachedMarkdown(entry.notes)}</div>${long ? '<button type="button" class="entry-more" data-more-notes aria-expanded="false">Show more</button>' : ''}` : ''}${artifact(entry.url)}</div><aside class="entry-aside"><time datetime="${new Date(entry.at).toISOString()}">${clock(entry.at)}</time>${amount}${duration ? `<span>${esc(duration)}</span>` : ''}${entry.model ? `<span class="entry-model">${esc(entry.model)}</span>` : ''}<span class="entry-kind">${entry.kind === 'sale' ? billingLabel(journalMoneyKind(entry)!) : KIND[entry.kind]}</span><button type="button" class="entry-read" data-read-entry="${esc(entry.id)}"${this.writable && !this.readDrafts.has(entry.id) ? '' : ' disabled'}>${this.readDrafts.has(entry.id) ? 'Saving…' : entry.readAt ? 'Mark unread' : 'Mark read & archive'}</button>${entry.source === 'agent' || entry.kind === 'sale' ? `<button type="button" class="entry-edit" data-edit-entry="${esc(entry.id)}" aria-label="Edit memory: ${esc(entry.title)}">Edit memory</button>` : ''}</aside></article>`;
     }).join('');
   }
   private readView(entry: JournalEntry): JournalEntry {
@@ -807,15 +1102,22 @@ export class Studio {
     if (!this.isOpen) return;
     const entries = new Map(this.state?.journal.map(e => [e.id, this.readView(e)]));
     for (const [id, pending] of this.readDrafts) if (!entries.has(id)) entries.set(id, this.readView(pending.entry));
+    // An archived row goes at once. What moves is the list closing over the gap it left, and
+    // opening again around a row that comes back.
+    const host = this.page === 'journal' ? this.root.querySelector<HTMLElement>('.journal-entries') : null;
+    const shown = (): HTMLElement[] => host ? [...host.querySelectorAll<HTMLElement>(':scope > :not([hidden])')] : [];
+    const tops = new Map(shown().map(el => [el, el.getBoundingClientRect().top]));
     this.root.querySelectorAll<HTMLElement>('[data-journal-entry]').forEach(row => {
       const entry = entries.get(row.dataset.journalEntry!); if (!entry) return;
       const button = row.querySelector<HTMLButtonElement>('[data-read-entry]')!;
       button.disabled = !this.writable || this.readDrafts.has(entry.id);
       button.textContent = this.readDrafts.has(entry.id) ? 'Saving…' : entry.readAt ? 'Mark unread' : 'Mark read & archive';
-      if (this.page === 'journal') row.hidden = !!entry.readAt !== this.journalArchive;
+      if (this.page !== 'journal') return;
+      const hide = !!entry.readAt !== this.journalArchive;
+      if (row.hidden && !hide) flash(row, 'arrived', 2000);
+      row.hidden = hide;
     });
-    if (this.page !== 'journal') return;
-    const host = this.root.querySelector('.journal-entries'); if (!host) return;
+    if (!host) return;
     host.querySelectorAll<HTMLElement>('.journal-day').forEach(day => {
       let row = day.nextElementSibling, visible = false;
       while (row && !row.classList.contains('journal-day')) { if (row.matches('[data-journal-entry]:not([hidden])')) visible = true; row = row.nextElementSibling; }
@@ -824,9 +1126,10 @@ export class Studio {
     const visible = [...host.querySelectorAll<HTMLElement>('[data-journal-entry]:not([hidden])')].flatMap(row => {
       const entry = entries.get(row.dataset.journalEntry!); return entry ? [entry] : [];
     });
-    const digest = this.root.querySelector('[data-digest]'); if (digest) digest.textContent = this.digest(this.journalView());
+    const digest = this.root.querySelector('[data-digest]'); if (digest) digest.textContent = this.journalSince ? '' : this.digest(this.journalView());
     host.querySelector('[data-read-empty]')?.remove();
-    if (!visible.length && host.querySelector('[data-journal-entry]')) host.insertAdjacentHTML('afterbegin', `<div class="studio-empty" data-read-empty><b>${this.journalArchive ? 'No archived entries on this page.' : 'You’re all caught up on this page.'}</b><p>${this.readDrafts.size ? 'Saving your changes… You can keep browsing.' : 'Use the journal filters or load more memories.'}</p></div>`);
+    this.slideFrom(shown(), el => tops.get(el));
+    if (!visible.length && host.querySelector('[data-journal-entry]')) host.insertAdjacentHTML('afterbegin', `<div class="studio-empty${this.journalArchive ? '' : ' caught-up'}" data-read-empty><span aria-hidden="true">${studioIcon(this.journalArchive ? 'journal' : 'check', 28)}</span><b>${this.journalArchive ? 'No archived entries on this page.' : 'You’re all caught up on this page.'}</b><p>${this.readDrafts.size ? 'Saving your changes… You can keep browsing.' : 'Use the journal filters or load more memories.'}</p></div>`);
   }
   private cachedMarkdown(notes: string) {
     let html = this.markdownCache.get(notes);
@@ -838,13 +1141,15 @@ export class Studio {
   }
   private paintJournalRows(host: HTMLElement, html: string) {
     const template = document.createElement('template'); template.innerHTML = html;
-    const key = (node: Element) => (node as HTMLElement).dataset.journalEntry ?? (node.classList.contains('journal-day') ? `day:${node.textContent}` : '');
+    const key = (node: Element) => (node as HTMLElement).dataset.journalEntry ?? (node as HTMLElement).dataset.trophy ?? (node.classList.contains('journal-day') ? `day:${node.textContent}` : '');
     const existing = new Map([...host.children].filter(node => key(node)).map(node => [key(node), node]));
     let cursor = host.firstElementChild;
     for (const next of [...template.content.children]) {
       const markup = next.outerHTML, old = existing.get(key(next));
       const node = old && this.rowMarkup.get(old) === markup ? old : next;
       this.rowMarkup.set(node, markup);
+      // Work that lands while the list is being read is pointed out; a first paint or a search is not.
+      if (!old && this.arriving && next.matches('[data-journal-entry],[data-trophy]')) flash(node, 'arrived', 2000);
       if (node !== cursor) host.insertBefore(node, cursor); else cursor = cursor.nextElementSibling;
     }
     while (cursor) { const next = cursor.nextElementSibling; cursor.remove(); cursor = next; }
@@ -879,12 +1184,13 @@ export class Studio {
     }));
     this.freshEntryControls<HTMLButtonElement>('[data-entry]').forEach(button => button.addEventListener('click', () => {
       const entry = this.state!.journal.find(e => e.id === button.dataset.entry); if (!entry) return;
-      if (entry.kind === 'sale' && entry.moneyId && this.onPayment) { this.onPayment({ id: entry.moneyId, source: entry.source === 'revenuecat' ? 'revenuecat' : 'stripe', title: entry.title, at: entry.at, amount: entry.amount, currency: entry.currency, url: entry.url }); return; }
+      if (journalCategory(entry) === 'sale' && entry.moneyId && this.onPayment) { this.onPayment({ id: entry.moneyId, source: entry.source === 'revenuecat' ? 'revenuecat' : 'stripe', title: entry.title, at: entry.at, amount: entry.amount, currency: entry.currency, url: entry.url }); return; }
       if (entry.source === 'agent') { this.openMemoryChat(entry); return; }
       const content = this.root.querySelector<HTMLElement>('.studio-content')!;
       if (entry.source === 'goal') {
         const project = this.state!.projects.find(p => p.id === entry.project), goal = project?.goals.find(g => g.id === entry.goalId);
-        if (project && goal) { this.page = 'boards'; this.boardId = project.id; this.editGoal(content, project, goal); }
+        // The milestone lives on its whiteboard: go there, so the title bar, the tab and Back agree.
+        if (project && goal) { this.page = 'boards'; this.boardId = project.id; this.render(false); this.editGoal(this.root.querySelector<HTMLElement>('.studio-content')!, project, goal); }
       } else this.editEntry(content, entry);
     }));
   }
@@ -907,7 +1213,7 @@ export class Studio {
       if (!cached || cached.names !== namesKey) { cached = { names: namesKey, text: `${entry.title} ${entry.notes} ${entry.contributors.map(id => names.get(id) ?? '').join(' ')}`.toLowerCase() }; this.searchCache.set(entry, cached); }
       return cached.text.includes(needle);
     };
-    return [...entries.values()].map(entry => this.readView(entry)).sort((a, b) => b.at - a.at).filter(e => (trophies || !!this.journalSince || !!e.readAt === this.journalArchive) && (!trophies || ['milestone', 'release'].includes(e.kind)) && (!this.journalSince || trophies || e.at > this.journalSince) && (!this.journalProject || e.project === this.journalProject) && (trophies || !this.journalKind || e.kind === this.journalKind) && (!needle || matches(e)));
+    return [...entries.values()].map(entry => this.readView(entry)).sort((a, b) => b.at - a.at).filter(e => (trophies || !!this.journalSince || !!e.readAt === this.journalArchive) && (!trophies || ['milestone', 'release'].includes(e.kind)) && (!this.journalSince || trophies || e.at > this.journalSince) && (!this.journalProject || e.project === this.journalProject) && (trophies || !this.journalKind || journalCategory(e) === this.journalKind) && (!needle || matches(e)));
   }
   private journal(content: HTMLElement) {
     const trophies = this.page === 'trophies';
@@ -921,7 +1227,8 @@ export class Studio {
         }
         return;
       }
-      const cachedMoney = this.moneyCache.get(key);
+      const storedMoney = this.moneyCache.get(this.recapMoneyKey(query()));
+      const cachedMoney = storedMoney && Date.now() - storedMoney.at < 120_000 ? storedMoney : undefined;
       this.historyMoney = cachedMoney?.money; this.historyMoneyRevision = cachedMoney?.revision ?? -1;
       this.historyQuery = key; this.historyRequest++; this.historyLoading = false; this.historyError = false;
       const filtered = !trophies || this.journalProject || this.journalKind || this.journalSearch || this.journalSince || trophies;
@@ -929,18 +1236,25 @@ export class Studio {
       this.historyQueryLoaded = !filtered;
     };
     selectQuery();
-    content.innerHTML = `<div class="journal-heading"><div><small>${trophies ? 'THE TROPHY SHELF' : this.journalSince ? (this.recapRange === 'look' ? 'WHILE YOU WERE AWAY' : `RECAP · ${esc(this.recapPhrase().toUpperCase())}`) : 'THE STUDIO JOURNAL'}</small><h2 data-journal-title>${trophies ? 'Things we made happen.' : this.journalSince ? 'Here’s what happened.' : 'The work becomes a story.'}</h2><p class="journal-digest" data-digest></p></div><button type="button" class="primary" data-new-memory${this.writable ? '' : ' disabled'}>${trophies ? '＋ Record a release' : '＋ Add a memory'}</button></div>${trophies ? '' : this.journalSince ? `<div class="journal-mailboxes recap-ranges" role="group" aria-label="Recap window">${RECAP_RANGES.filter(r => r.value !== 'look' || this.recapLook).map(r => `<button type="button" data-recap-range="${r.value}" aria-pressed="${r.value === this.recapRange}">${r.label}</button>`).join('')}</div><div class="recap-summary" data-recap-summary></div>` : `<div class="journal-mailboxes" role="group" aria-label="Journal status"><button type="button" data-journal-box="unread" aria-pressed="${!this.journalArchive}">Unread</button><button type="button" data-journal-box="archive" aria-pressed="${this.journalArchive}">Archive</button></div>`}<div class="journal-filters">${field('Project', this.projectMenu('journal-project', 'Project', this.journalProject, 'All projects'))}${trophies ? '' : field('Kind', this.menu('journal-kind', 'Kind', this.journalKind, [{ value: '', label: 'All memories' }, { value: 'task', label: 'Completed work' }, { value: 'milestone', label: 'Milestones' }, { value: 'release', label: 'Releases' }, { value: 'note', label: 'Notes' }, { value: 'sale', label: 'Sales' }]))}${field('Find a memory', `<input type="search" data-journal-search value="${esc(this.journalSearch)}" placeholder="Search titles, notes, people…">`)}${this.journalSince ? '<button type="button" data-all-history>Show full journal</button>' : ''}</div><div class="journal-entries"></div>`;
+    // Trophies won since the shelf was last looked at wear a ribbon for this visit. A first visit
+    // has nothing to compare with, so nothing is new.
+    const shelfKey = 'herdr-story:trophies-seen';
+    let shelfNewest = 0;
+    if (trophies) try { shelfNewest = Number(localStorage.getItem(shelfKey)) || 0; } catch { /* private mode */ }
+    const shelfSeen = shelfNewest || Infinity;
+    content.innerHTML = `<div class="journal-heading"><div><small>${trophies ? 'THE TROPHY SHELF' : this.journalSince ? (this.recapRange === 'look' ? 'WHILE YOU WERE AWAY' : `RECAP · ${esc(this.recapPhrase().toUpperCase())}`) : 'THE STUDIO JOURNAL'}</small><h2 data-journal-title>${trophies ? 'Things we made happen.' : this.journalSince ? 'Here’s what happened.' : 'The work becomes a story.'}</h2><p class="journal-digest" data-digest></p></div><button type="button" class="primary" data-new-memory${this.writable ? '' : ' disabled'}>${trophies ? '＋ Record a release' : '＋ Add a memory'}</button></div>${trophies ? '' : this.journalSince ? `<div class="journal-mailboxes recap-ranges" role="group" aria-label="Recap window">${RECAP_RANGES.filter(r => r.value !== 'look' || this.recapLook).map(r => `<button type="button" data-recap-range="${r.value}" aria-pressed="${r.value === this.recapRange}">${r.label}</button>`).join('')}</div><div class="recap-summary" data-recap-summary></div>` : `<div class="journal-mailboxes" role="group" aria-label="Journal status"><button type="button" data-journal-box="unread" aria-pressed="${!this.journalArchive}">Unread</button><button type="button" data-journal-box="archive" aria-pressed="${this.journalArchive}">Archive</button></div>`}<div class="journal-filters">${field('Project', this.projectMenu('journal-project', 'Project', this.journalProject, 'All projects'))}${trophies ? '' : field('Kind', this.menu('journal-kind', 'Kind', this.journalKind, [{ value: '', label: 'All memories' }, { value: 'task', label: 'Completed work' }, { value: 'milestone', label: 'Milestones' }, { value: 'release', label: 'Releases' }, { value: 'note', label: 'Notes' }, { value: 'sale', label: 'Payments & refunds' }, { value: 'subscription', label: 'Subscription activity' }]))}${field('Find a memory', `<input type="search" data-journal-search value="${esc(this.journalSearch)}" placeholder="Search titles, notes, people…">`)}${this.journalSince ? '<button type="button" data-all-history>Show full journal</button>' : ''}</div><div class="journal-entries"></div>`;
     const paint = () => {
       if (!content.isConnected || !content.querySelector('.journal-entries')) return;
       content.dataset.historyPending = String(this.historyLoading);
       const entries = this.journalView(trophies);
       const host = content.querySelector<HTMLElement>('.journal-entries')!;
       host.classList.toggle('trophy-shelves', trophies);
-      content.querySelector<HTMLElement>('[data-digest]')!.textContent = trophies || this.journalSince ? '' : this.digest(entries);
+      content.querySelector<HTMLElement>('[data-digest]')!.textContent = trophies ? this.shelfCount(entries.length) : this.journalSince ? '' : this.digest(entries);
       if (this.journalSince && !trophies) {
         const totals = this.recapMoneyTotals(entries);
         const made = totals?.usd ? {amount: totals.usd.amount, currency: 'usd'} : undefined;
-        content.querySelector<HTMLElement>('[data-journal-title]')!.textContent = made?.amount ? `${totals?.usd?.estimated ? 'About' : 'You made'} ${money(made.amount, made.currency)} USD ${this.recapPhrase()}.` : entries.length ? `Here’s what happened ${this.recapPhrase()}.` : `Nothing happened ${this.recapPhrase()}.`;
+        const shown = made ? gameCurrency.convert(made.amount, 'usd') : undefined;
+        content.querySelector<HTMLElement>('[data-journal-title]')!.textContent = made?.amount ? `${totals?.usd?.estimated || shown?.estimated ? 'About' : 'You made'} ${shown ? gameCurrency.format(shown.amount) : `${money(made.amount, 'usd')} USD`} ${this.recapPhrase()}.` : entries.length ? `Here’s what happened ${this.recapPhrase()}.` : `Nothing happened ${this.recapPhrase()}.`;
         const summary = content.querySelector<HTMLElement>('[data-recap-summary]');
         if (summary) summary.innerHTML = this.recapSummary(entries);
         summary?.querySelector('[data-retry-recap]')?.addEventListener('click', () => {
@@ -948,8 +1262,10 @@ export class Studio {
           void this.loadHistory(query(), paint);
         });
       }
-      const markup = (trophies ? entries.slice(0, this.journalLimit).map(e => `<article class="trophy-card"><img src="/assets/gds/celebrate/trophy.png?v=2" alt=""><small>${esc(e.kind)} · ${new Date(e.at).toLocaleDateString()}</small><button type="button" data-entry="${e.id}">${esc(e.title)}</button><p>${esc(this.state!.projects.find(p => p.id === e.project)?.name || 'Studio')}</p>${artifact(e.url)}<div class="goal-contributors">${this.chips(e.contributors)}</div></article>`).join('') : this.dayRows(entries.slice(0, this.journalLimit))) || `<div class="studio-empty"><span aria-hidden="true">${studioIcon(trophies ? 'trophies' : 'journal', 28)}</span><b>${this.journalSearch || this.journalProject || this.journalKind ? 'No matching memories.' : trophies ? 'Save a place for the first achievement.' : this.journalArchive ? 'No archived entries yet.' : 'You’re all caught up.'}</b><p>${trophies ? 'Complete a milestone or record a release. Add its real artifact link so you can revisit it.' : 'Completed work is recorded automatically. You can also add notes, releases, and links yourself.'}</p></div>`;
+      const markup = (trophies ? entries.slice(0, this.journalLimit).map(e => `<article class="trophy-card${e.at > shelfSeen ? ' new' : ''}" data-trophy="${esc(e.id)}"><img src="/assets/gds/celebrate/trophy.png?v=2" alt="" onerror="this.hidden=true"><small>${esc(e.kind)} · ${new Date(e.at).toLocaleDateString()}</small><button type="button" data-entry="${e.id}">${esc(e.title)}</button><p>${esc(this.state!.projects.find(p => p.id === e.project)?.name || 'Studio')}</p>${artifact(e.url)}<div class="goal-contributors">${this.chips(e.contributors)}</div></article>`).join('') : this.dayRows(entries.slice(0, this.journalLimit))) || `<div class="studio-empty"><span aria-hidden="true">${studioIcon(trophies ? 'trophies' : 'journal', 28)}</span><b>${this.journalSearch || this.journalProject || this.journalKind ? 'No matching memories.' : trophies ? 'Save a place for the first achievement.' : this.journalArchive ? 'No archived entries yet.' : 'You’re all caught up.'}</b><p>${trophies ? 'Complete a milestone or record a release. Add its real artifact link so you can revisit it.' : 'Completed work is recorded automatically. You can also add notes, releases, and links yourself.'}</p></div>`;
       this.paintJournalRows(host, markup);
+      const newest = trophies ? Math.max(0, ...entries.map(e => e.at)) : 0;
+      if (newest > shelfNewest) { shelfNewest = newest; try { localStorage.setItem(shelfKey, String(newest)); } catch { /* private mode */ } }
       content.dataset.signature = this.panelSignature(trophies ? 'trophies' : 'journal');
       content.dataset.context = this.panelSignature(trophies ? 'trophies' : 'journal', true);
       if (entries.length > this.journalLimit) host.insertAdjacentHTML('beforeend', `<button type="button" class="load-memories" data-more>Load more · ${entries.length - this.journalLimit} remaining</button>`);
@@ -962,9 +1278,11 @@ export class Studio {
       this.bindEntries(); this.bindPeople(); this.paintAvatars();
     };
     content.querySelectorAll<HTMLButtonElement>('[data-recap-range]').forEach(button => button.addEventListener('click', () => {
+      audio.blip('tick');
       this.recapRange = button.dataset.recapRange as RecapRange; this.journalSince = recapStart(this.recapRange, this.recapLook); this.journalLimit = 40; this.render();
     }));
     content.querySelectorAll<HTMLButtonElement>('[data-journal-box]').forEach(button => button.addEventListener('click', () => {
+      audio.blip('tick');
       this.journalArchive = button.dataset.journalBox === 'archive'; this.journalSince = 0; this.journalLimit = 40; this.render();
     }));
     this.bindMenus(content, { 'journal-project': id => { this.journalProject = id; this.journalLimit = 40; this.render(); }, 'journal-kind': kind => { this.journalKind = kind; this.journalLimit = 40; this.render(); } });
@@ -975,9 +1293,16 @@ export class Studio {
       }, 250); });
     content.querySelector('[data-all-history]')?.addEventListener('click', () => { this.journalSince = 0; this.render(); });
     content.querySelector('[data-new-memory]')?.addEventListener('click', () => this.editEntry(content, undefined, trophies));
+    const load = () => { if (!this.historyQueryLoaded && (this.journalSince || (this.state!.journalTotal ?? 0) > this.state!.journal.length)) void this.loadHistory(query(), paint); };
+    // Live work repaints this panel by the same steps as a fresh build, without the rebuild.
+    this.painters.set(content, { paint, refresh: () => { selectQuery(); paint(); load(); } });
     this.historyPaint = paint;
-    paint();
-    if (!this.historyQueryLoaded && (this.journalSince || (this.state!.journalTotal ?? 0) > this.state!.journal.length)) void this.loadHistory(query(), paint);
+    paint(); load();
+  }
+  private shelfCount(shown: number) {
+    // The bridge counts the whole shelf; a filter or a search counts what it left standing.
+    const count = this.journalProject || this.journalSearch ? shown : Math.max(shown, this.state?.journalSummary?.trophies ?? 0);
+    return count ? `${count} ${count === 1 ? 'trophy' : 'trophies'} on the shelf` : '';
   }
   private recapPhrase() { return RECAP_RANGES.find(r => r.value === this.recapRange)?.phrase ?? 'since you last looked'; }
   /** The recap's scoreboard: money, shipped work and who shipped it, trophies, time, and which
@@ -1002,7 +1327,7 @@ export class Studio {
     const project = (id: string) => this.state?.projects.find(p => p.id === id)?.name ?? projectName(id);
     const card = (label: string, value: string, detail: string) => `<div class="recap-card"><small>${label}</small><b>${value}</b><span>${detail}</span></div>`;
     const cards = [
-      card('Money made · USD', totals?.usd ? `${totals.usd.estimated ? '≈ ' : ''}${esc(money(totals.usd.amount, 'usd'))}` : this.historyLoading ? 'Converting…' : 'Total unavailable',
+      card(`Money made · ${esc(gameCurrency.get().toUpperCase())}`, totals?.usd ? esc((totals.usd.estimated ? '≈ ' : '') + (gameCurrency.display(totals.usd.amount, 'usd').replace(/^≈/, totals.usd.estimated ? '' : '≈ '))) : this.historyLoading ? 'Converting…' : 'Total unavailable',
         !totals?.usd && !this.historyLoading ? `${this.historyError || !totals ? 'Could not load the total' : 'Exchange rates unavailable'}${totals?.totals.length ? `<br>${totals.totals.map(t => esc(money(t.amount, t.currency, false, true))).join(' + ')}` : ''}<br><button type="button" data-retry-recap>Try again</button>` : totals ? `${totals.usd?.estimated ? `Estimated · rates ${esc(totals.usd.rateDate)}<br>` : ''}${this.historyLoading && totals.usd ? 'Updating…<br>' : ''}${n(totals.payments, 'payment')}${totals.refunds ? ` · ${n(totals.refunds, 'refund or adjustment', 'refunds or adjustments')} deducted` : ''}${totals.billingEvents - totals.payments - totals.refunds ? ` · ${n(totals.billingEvents - totals.payments - totals.refunds, 'other billing event')}` : ''}` : 'Total for the selected period'),
       card('Shipped', String(tasks.length), tasks.length ? (top(byPerson, person) || n(new Set(tasks.flatMap(e => e.contributors)).size, 'person', 'people')) : 'no tasks completed'),
       card('Trophies', String(trophies.length), trophies.length ? esc(trophies[0].title) : 'no milestones or releases'),
@@ -1013,7 +1338,8 @@ export class Studio {
   }
   /** One line that says what the list below adds up to. */
   private digest(entries: JournalEntry[]) {
-    if (!entries.length) return '';
+    // Never empty: a line that comes and goes would move the search box under the caret.
+    if (!entries.length) return this.journalSearch || this.journalProject || this.journalKind ? 'Nothing matches these filters.' : this.journalArchive ? 'The archive is empty.' : 'Nothing waiting. All caught up.';
     const tasks = entries.filter(e => e.kind === 'task'), minutes = tasks.reduce((n, e) => n + (e.minutes ?? 0), 0);
     const people = new Set(entries.flatMap(e => e.contributors)).size, projects = new Set(entries.map(e => e.project).filter(Boolean)).size;
     const parts = [`${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} completed`];
@@ -1035,11 +1361,13 @@ export class Studio {
   }
   private editEntry(content: HTMLElement, entry?: JournalEntry, release = false) {
     const isTask = entry?.source === 'agent' || entry?.kind === 'sale';
-    const form = this.editor(content, entry ? 'Edit memory' : release ? 'Record a release' : 'Add a memory', field('Title', `<input name="title" required maxlength="160" placeholder="Our first public release" value="${esc(entry?.title)}">`) + field('Notes', `<textarea name="notes" rows="4" maxlength="6000" placeholder="What happened? What should we remember?">${esc(entry?.notes)}</textarea>`) + `<div class="editor-pair">${field('Project', `<select name="project"><option value="">Studio</option>${this.projectOptions(entry?.project ?? '')}</select>`)}${isTask ? `<p class="memory-source">${entry.kind === 'sale' ? `${entry.source === 'revenuecat' ? 'RevenueCat' : 'Stripe'} · ${typeof entry.amount === 'number' ? money(entry.amount, entry.currency, true) : 'sale'}` : 'Completed agent work'}</p>` : field('Memory kind', `<select name="kind"><option value="note"${selected(!release && entry?.kind !== 'release')}>Note</option><option value="release"${selected(release || entry?.kind === 'release')}>Release · display on trophy shelf</option></select>`)}</div>${field('Artifact link · optional', `<input name="url" type="url" maxlength="2000" placeholder="https://…" value="${esc(entry?.url)}">`)}${isTask ? `<div class="goal-contributors">${this.chips(entry.contributors)}</div>` : this.contributors(entry?.contributors ?? [])}`, form => {
-      const data = new FormData(form); void this.change({ op: 'entry.save', id: entry?.id, version: entry?.version, title: data.get('title'), notes: data.get('notes'), project: data.get('project'), kind: data.get('kind'), url: data.get('url'), contributors: this.picked(form) });
+    const form = this.editor(content, entry ? 'Edit memory' : release ? 'Record a release' : 'Add a memory', field('Title', `<input name="title" required maxlength="160" placeholder="Our first public release" value="${esc(entry?.title)}">`) + field('Notes', `<textarea name="notes" rows="4" maxlength="6000" placeholder="What happened? What should we remember?">${esc(entry?.notes)}</textarea>`) + `<div class="editor-pair">${field('Project', `<select name="project"><option value="">Studio</option>${this.projectOptions(entry?.project ?? '')}</select>`)}${isTask ? `<p class="memory-source">${entry.kind === 'sale' ? `${entry.source === 'revenuecat' ? 'RevenueCat' : 'Stripe'} · ${typeof entry.amount === 'number' ? money(entry.amount, entry.currency, true) : billingLabel(journalMoneyKind(entry)!)}` : 'Completed agent work'}</p>` : field('Memory kind', `<select name="kind"><option value="note"${selected(!release && entry?.kind !== 'release')}>Note</option><option value="release"${selected(release || entry?.kind === 'release')}>Release · display on trophy shelf</option></select>`)}</div>${field('Artifact link · optional', `<input name="url" type="url" maxlength="2000" placeholder="https://…" value="${esc(entry?.url)}">`)}${isTask ? `<div class="goal-contributors">${this.chips(entry.contributors)}</div>` : this.contributors(entry?.contributors ?? [])}`, form => {
+      const data = new FormData(form), trophy = data.get('kind') === 'release' && entry?.kind !== 'release';
+      void this.change({ op: 'entry.save', id: entry?.id, version: entry?.version, title: data.get('title'), notes: data.get('notes'), project: data.get('project'), kind: data.get('kind'), url: data.get('url'), contributors: this.picked(form) }, undefined, { quiet: trophy })
+        .then(ok => { if (ok && trophy) this.cheer('Release recorded. It’s on the trophy shelf.'); });
     });
     this.drafts.bind(form, `entry:${entry?.id ?? (release ? 'release' : 'new')}`, { kind: 'entry', id: entry?.id, release, version: entry?.version, title: entry?.title ?? (release ? 'New release' : 'New memory') });
-    if (entry) this.removeButton(form, entry.kind === 'sale' ? 'Remove this sale from the journal' : isTask ? 'Remove this completion and its career point' : 'Remove memory', () => void this.change({ op: 'entry.remove', id: entry.id, version: entry.version }));
+    if (entry) this.removeButton(form, entry.kind === 'sale' ? 'Remove this billing entry from the journal' : isTask ? 'Remove this completion and its career point' : 'Remove memory', () => void this.change({ op: 'entry.remove', id: entry.id, version: entry.version }));
     this.bindPeople();
   }
   private room(content: HTMLElement) {
@@ -1053,14 +1381,14 @@ export class Studio {
     content.querySelectorAll<HTMLButtonElement>('[data-project-move]').forEach(button => button.addEventListener('click', () => {
       this.startRoom();
       const list = this.roomDraft!.order, from = Number(button.dataset.projectMove), to = from + Number(button.dataset.direction);
-      [list[from], list[to]] = [list[to], list[from]]; this.office.previewProjectOrder(list); this.paintEditBar(); this.render();
+      [list[from], list[to]] = [list[to], list[from]]; this.office.previewProjectOrder(list); this.paintEditBar(); this.redraw();
     }));
     content.querySelectorAll<HTMLButtonElement>('[data-add-kind]').forEach(button => {
       button.disabled = !this.writable;
       button.addEventListener('click', () => {
         this.startRoom();
         try { this.office.furnishings.add(button.dataset.addKind as RoomItem['kind'], button.dataset.asset, content.querySelector<HTMLElement>('[data-menu="furniture-project"]')!.dataset.value!); this.close(); this.paintEditBar(); this.focusRoomControl(); }
-        catch (error) { this.toast((error as Error).message); }
+        catch (error) { this.toast((error as Error).message, undefined, 'error'); }
       });
     });
   }
@@ -1094,7 +1422,7 @@ export class Studio {
     const name = item ? furniture.label(item).split('\n')[0].replace(' · drag to move', '') : '';
     this.editBar.innerHTML = `<div class="room-edit-heading"><div><b>Arrange furniture</b><span>Preview · save when you’re happy</span></div><div class="room-edit-finish"><button type="button" data-cancel-room>Cancel</button><button type="button" class="primary" data-save-room>${this.roomSaving ? 'Saving…' : 'Save layout'}</button></div></div>
       <p class="room-edit-help" id="room-edit-help">${item ? `Move <b>${esc(name)}</b>: drag it or use the arrows below.` : 'Click an object in the office, or choose one below to bring it into view.'}</p>
-      <div class="room-edit-tools"><select data-selected aria-label="Select a furnishing" aria-describedby="room-edit-help"><option value="">Choose furniture to move…</option>${furniture.items.map(item => `<option value="${esc(item.id)}"${selected(furniture.selected === item.id)}>${esc(furniture.label(item).split('\n')[0].replace(' · drag to move', ''))}</option>`).join('')}</select><div class="room-nudge" role="group" aria-label="Move selected furniture one tile"><button type="button" data-nudge="-16,-8" title="Move one tile northwest" aria-label="Move furnishing northwest">↖</button><button type="button" data-nudge="16,-8" title="Move one tile northeast" aria-label="Move furnishing northeast">↗</button><button type="button" data-nudge="-16,8" title="Move one tile southwest" aria-label="Move furnishing southwest">↙</button><button type="button" data-nudge="16,8" title="Move one tile southeast" aria-label="Move furnishing southeast">↘</button></div><button type="button" data-remove${item ? '' : ' disabled'}>Remove</button><div class="room-edit-browse"><button type="button" data-catalog>＋ Add furniture</button><button type="button" data-projects>Project areas</button></div></div>`;
+      <div class="room-edit-tools"><select data-selected aria-label="Select a furnishing" aria-describedby="room-edit-help"><option value="">Choose furniture to move…</option>${furniture.items.map(item => `<option value="${esc(item.id)}"${selected(furniture.selected === item.id)}>${esc(furniture.label(item).split('\n')[0].replace(' · drag to move', ''))}</option>`).join('')}</select><div class="room-nudge" role="group" aria-label="Move selected furniture one tile"><button type="button" data-nudge="-16,-8" title="Move one tile northwest" aria-label="Move furnishing northwest">${studioIcon('nw')}</button><button type="button" data-nudge="16,-8" title="Move one tile northeast" aria-label="Move furnishing northeast">${studioIcon('ne')}</button><button type="button" data-nudge="-16,8" title="Move one tile southwest" aria-label="Move furnishing southwest">${studioIcon('sw')}</button><button type="button" data-nudge="16,8" title="Move one tile southeast" aria-label="Move furnishing southeast">${studioIcon('se')}</button></div><button type="button" data-remove${item ? '' : ' disabled'}>Remove</button><div class="room-edit-browse"><button type="button" data-catalog>＋ Add furniture</button><button type="button" data-projects>Project areas</button></div></div>`;
     this.editBar.querySelector<HTMLSelectElement>('[data-selected]')?.addEventListener('change', event => {
       furniture.select((event.target as HTMLSelectElement).value); furniture.focusSelected();
     });
@@ -1112,10 +1440,10 @@ export class Studio {
         this.finishRoom(true); this.close(); this.dock.querySelector<HTMLButtonElement>('[data-arrange-room]')?.focus({ preventScroll: true });
       }).finally(() => { this.roomSaving = false; this.paintEditBar(); });
     });
-    this.editBar.querySelector('[data-remove]')?.addEventListener('click', () => { try { const removed = furniture.removeSelected(); if (removed) this.toast('Furniture removed from this arrangement.', () => { if (!this.roomDraft || this.roomSaving) return; furniture.restoreItem(removed); this.toast('Furniture restored.'); }); } catch (error) { this.toast((error as Error).message); } });
+    this.editBar.querySelector('[data-remove]')?.addEventListener('click', () => { try { const removed = furniture.removeSelected(); if (removed) this.toast('Furniture removed from this arrangement.', () => { if (!this.roomDraft || this.roomSaving) return; furniture.restoreItem(removed); this.toast('Furniture restored.'); }); } catch (error) { this.toast((error as Error).message, undefined, 'error'); } });
     this.editBar.querySelectorAll<HTMLButtonElement>('[data-nudge]').forEach(button => {
       button.disabled = !item;
-      button.addEventListener('click', () => { const [x, y] = button.dataset.nudge!.split(',').map(Number); try { furniture.moveSelected(x, y); } catch (error) { this.toast((error as Error).message); } });
+      button.addEventListener('click', () => { const [x, y] = button.dataset.nudge!.split(',').map(Number); try { furniture.moveSelected(x, y); } catch (error) { this.toast((error as Error).message, undefined, 'error'); } });
     });
     if (this.roomSaving) this.editBar.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button,select').forEach(control => { control.disabled = true; });
     if (focusKey) [...this.editBar.querySelectorAll<HTMLElement>('button,select')].find(control => control.getAttribute(focusKey.name) === focusKey.value)?.focus({ preventScroll: true });

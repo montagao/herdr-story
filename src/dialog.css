@@ -1,0 +1,150 @@
+/* The conversation, recruitment and launch windows. Their layout is in style.css; this sheet is
+   how they behave under the hand: buttons that press, one strip above the output that never
+   changes height, receipts that stay until the transcript has them. It loads after style.css, so
+   a rule here with the same weight as one there is the one that applies. */
+
+/* ---- title bar ---- */
+.win-title .close { display:grid; place-items:center; flex:none; width:26px; height:22px; padding:0; border:1px solid #9bafc0; border-radius:3px;
+  background:linear-gradient(#fff,#dfe9f1); box-shadow:0 2px 0 #9bafc0; color:#37505f; cursor:pointer; }
+.win-title .close svg { display:block; pointer-events:none; }
+.win-title .close:hover { border-color:#c77a73; background:#fde8e6; box-shadow:0 2px 0 #c77a73; color:#9b3028; }
+.win-title .close:active { transform:translateY(2px); box-shadow:none; }
+/* Two auto margins would share the free space and leave the profile button adrift mid-bar. */
+.conversation-win .employee-customize + .close { margin-left:8px; }
+@media (max-width:820px) { .win-title .close { width:38px; height:32px; } }
+/* A level gained while the window is open: the badge hops twice and settles. */
+.title-level.levelled { animation:level-up 360ms var(--glide-ease); }
+@keyframes level-up { 0%,50%,100% { transform:none; } 25% { transform:translateY(-4px); } 75% { transform:translateY(-2px); } }
+/* The agent at their desk: a two-frame bob while they work. */
+.conversation-win[data-status="working"] .win-title .avatar canvas { animation:avatar-type .5s steps(1) infinite; }
+@keyframes avatar-type { 50% { transform:translateY(-1px); } }
+
+/* ---- buttons press ----
+   The game's buttons have a thick bottom edge that flattens under the finger. Here the edge is a
+   shadow rather than a wider border, so pressing one moves nothing around it. */
+.reply button, .recent-conversations button, .terminal-history, .terminal-live, .pane-widen, .prompt-outbox button,
+.prompt-queue button, .conversation-rail button, .live-agent-settings button, .agent-exit button { box-shadow:0 2px 0 var(--edge,#a9becd); }
+:is(.reply button, .recent-conversations button, .terminal-history, .terminal-live, .pane-widen, .prompt-outbox button,
+  .prompt-queue button, .conversation-rail button, .live-agent-settings button, .agent-exit button):active:not(:disabled) { transform:translateY(2px); box-shadow:none; }
+.terminal-history:hover, .terminal-live:hover, .pane-widen:hover:not(:disabled), .prompt-outbox button:hover, .conversation-rail button:hover,
+.recent-conversations button:hover, .live-agent-settings button:hover:not(:disabled) { background:#eaf3fb; border-color:#6f8ba3; }
+.terminal-history, .terminal-live, .pane-widen { padding:2px 7px; }
+.live-agent-settings button { --edge:#93a6b5; }
+.agent-exit button { --edge:#b9564d; }
+.agent-exit-confirm button:last-child { --edge:#9aa8b3; }
+.hire-actions button:active:not(:disabled) { box-shadow:none; }
+
+/* ---- recent agents ----
+   Each tab carries its agent's face, so three agents of one kind are not three identical words.
+   The open one stays pressed in. */
+.recent-conversations { padding-bottom:8px; }
+.recent-conversations button { display:inline-flex; align-items:center; gap:5px; padding:2px 8px 2px 4px; }
+.recent-conversations button canvas { flex:none; border-radius:2px; background:#dce8f0; image-rendering:pixelated; }
+.recent-conversations button span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.recent-conversations [aria-current="page"], .recent-conversations [aria-current="page"]:hover { transform:translateY(2px); box-shadow:none; background:#dceefa; border-color:#5395bf; cursor:default; }
+
+/* ---- the strip above the output ----
+   A wait notice, a finished task, or a line saying which face this is: one slot, one height, on
+   both faces. The box under it does not move when what it says changes. */
+.conversation-rail { flex:none; display:grid; min-height:30px; }
+.conversation-rail > * { grid-area:1/1; min-width:0; min-height:30px; margin:0; padding:2px 6px 4px 10px; border-radius:3px; font-size:12px; line-height:1.4; }
+.conversation-rail > .conversation-freshness, .conversation-rail > .agent-completion { display:flex; flex-direction:row; align-items:center; justify-content:space-between; gap:10px; }
+.conversation-rail > .agent-wait-notice { padding:5px 10px; }   /* the one that may run to a second line */
+.conversation-rail > [hidden] { display:none; }
+.conversation-rail span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.conversation-rail button { flex:none; padding:2px 8px; border:1px solid #a9becd; border-radius:3px; background:#f5fafd; color:#36596f; font:11px var(--font); text-decoration:none; cursor:pointer; }
+.conversation-rail .agent-completion button { --edge:#88a66b; border-color:#88a66b; background:#fff; color:#365128; }
+.conversation-rail .agent-completion button:hover { background:#f4faee; border-color:#6f8f52; }
+.conversation-freshness.greeting { border-color:#88a66b; background:#edf4e5; color:#365128; }
+/* A task finished, or a new hire arrived, while you were looking: the strip lands. */
+.agent-completion.fresh, .conversation-freshness.greeting { animation:rail-land var(--pop-ms) var(--pop-ease) both; }
+@keyframes rail-land { from { transform:translateY(-6px) scale(.98); } }
+
+/* ---- the screen ----
+   The veil's hatch and label already wait a moment so a quick refresh never flashes them. The
+   dimming and the status line wait with them. */
+.terminal-frame[data-stale] > pre { animation:stale-dim .1s steps(1) .35s both; }
+@keyframes stale-dim { from { opacity:1; } to { opacity:.7; } }
+.win-body:has(.terminal-frame[data-stale]) .terminal-status { animation:stale-in .1s steps(1) .35s both; }
+
+/* ---- the conversation ---- */
+.turn-pending { font-style:normal; }    /* the pixel face has no italic; the browser would fake one */
+.turn-pending i { display:inline-block; width:3px; height:3px; margin-left:3px; background:currentColor; animation:turn-dot 1.2s steps(1) infinite; }
+.turn-pending i:nth-child(2) { animation-delay:.4s; }
+.turn-pending i:nth-child(3) { animation-delay:.8s; }
+@keyframes turn-dot { 0%,100% { opacity:0; } 30%,90% { opacity:1; } }
+.turn.turn-new { animation:turn-in var(--pop-ms) var(--glide-ease) both; }
+@keyframes turn-in { from { transform:translateY(6px); opacity:.4; } }
+
+/* ---- your messages ----
+   On the conversation face a delivered message belongs to the transcript. Its receipt stays
+   under the box only until the transcript shows it; one still sending, failed or unconfirmed
+   always shows. The screen face keeps the whole list. */
+[data-output-view="conversation"] .prompt-outbox .prompt-echo[data-filed="true"] { display:none; }
+[data-output-view="conversation"] .prompt-outbox .prompt-echo[data-filed="false"] { display:block; }
+[data-output-view="conversation"] .prompt-outbox:has(.prompt-echo[data-filed="false"]) { display:block; }
+[data-output-view="conversation"] .prompt-outbox:not(:has(.prompt-echo[data-filed="false"])) { display:none; }
+.prompt-outbox button { margin-top:5px; margin-bottom:2px; }
+.prompt-queue button { --edge:#cbd5dd; border:1px solid #c9d1d9; border-radius:3px; background:#fff; font-family:var(--font); cursor:pointer; }
+.prompt-queue .queue-retry { --edge:#c77a73; }
+
+/* ---- the composer ---- */
+.reply button { --edge:#c9d1d9; margin-bottom:2px; }    /* room for the edge, so a pressed button sits flush with the box */
+.reply button[type="submit"] { --edge:#1d5f80; background:linear-gradient(#4aa5d2,#2b7ba4); border-color:#1d5f80; text-shadow:0 1px #1d5f80; }
+.reply button[type="submit"]:hover { background:linear-gradient(#5bb3dd,#3389b3); }
+.reply .queue-button { --edge:#7195b2; }
+.reply [data-keys] { display:grid; place-items:center; padding:7px 10px; color:#37505f; }
+.reply [data-keys] svg { display:block; }
+/* Enter and Tab press their buttons: a send from the keyboard is seen to go as well. */
+.reply button.pressed { animation:reply-press var(--quick-ms) steps(1,end); }
+@keyframes reply-press { from { transform:translateY(2px); box-shadow:none; } }
+/* Stop lives on the note's line, under the send buttons, in room that is always there, so the
+   composer does not gain a row when an agent starts working and lose it when it stops. */
+.reply.can-queue .reply-note { grid-column:1; align-self:center; }
+.reply-stop-controls { order:1; grid-column:2 / -1; align-items:center; flex-wrap:wrap; min-height:26px; }
+.reply-stop-controls:has(button:not([hidden])) { margin-bottom:0; }
+.reply .reply-stop-controls button { margin-bottom:2px; padding:3px 8px; font-size:11px; }
+.reply [data-stop-task] { --edge:#d7a3a6; }
+.stop-mark { display:inline-block; width:7px; height:7px; margin-right:5px; background:currentColor; }
+@media (max-width:820px) { .reply .reply-stop-controls button { font-size:12px; } }
+
+/* ---- agent details ---- */
+.agent-settings-note[data-state="sent"] { color:#28784a; }
+.agent-settings-note[data-state="error"] { color:#b42318; }
+.xp-track i { transition:width 240ms steps(4,end); }
+
+/* ---- hiring ---- */
+.hire-banner { flex:none; }    /* a short window would squeeze it to a sliver */
+.launch-track { height:14px; margin:0 0 10px; padding:2px; background:#344654; border:1px solid #253642; border-radius:2px; }
+.launch-track i { display:block; width:34%; height:100%; background:repeating-linear-gradient(90deg,#31a7e8 0 10px,#69c7f5 10px 12px); transition:width 240ms steps(4,end); }
+.launch-win[data-step="2"] .launch-track i { width:67%; }
+.launch-win[data-step="3"] .launch-track i { width:100%; }
+.launch-win.failed .launch-track { display:none; }
+
+@media (prefers-reduced-motion:reduce) {
+  .turn-pending i, .conversation-win[data-status="working"] .win-title .avatar canvas, .title-level.levelled { animation:none; }
+  .launch-track i, .xp-track i { transition:none; }
+}
+
+/* ---- on a phone ---- */
+@media (max-width:820px) {
+  /* room for a finger: these were 19 to 28px tall */
+  .recent-conversations button, .pane-widen, .terminal-history, .terminal-live, .view-switch button, .conversation-rail button,
+  .reply .reply-stop-controls button, .agent-exit button { min-height:36px; padding:6px 10px; }
+  .conversation-details > summary { padding:10px 0; }
+  .conversation-win .employee-customize { min-height:34px; }
+  .reply-attachment .remove-image { top:-8px; right:-8px; width:28px; height:28px; border-radius:3px; font:16px/1 var(--font); }
+  /* Open, the agent's details are the window. Capped at a third of it they scrolled inside
+     themselves while the output shrank to a strip, and neither could be used. */
+  .conversation-details[open] { flex:1 1 auto; max-height:none; }
+  .win-body:has(.conversation-details[open]) :is(.terminal-tools, .conversation-rail, .terminal-frame, .transcript-output, .prompt-outbox, .prompt-queue) { display:none; }
+  /* model and effort take the full width like every other field in the form */
+  .agent-settings-fields { grid-template-columns:minmax(0,1fr); }
+}
+@media (max-width:600px) {
+  /* the strip may run to a second line here rather than lose its last words */
+  .conversation-rail > .conversation-freshness { align-items:center; }
+  .conversation-rail span { white-space:normal; overflow:visible; line-height:1.3; }
+}
+/* a touch keyboard has no Tab key to show on the queue button */
+@media (pointer:coarse) { .reply .queue-button kbd { display:none; } .reply .queue-button span { text-transform:capitalize; } }

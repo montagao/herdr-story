@@ -3,6 +3,9 @@
 function key(node: Node): string | undefined {
   if (!(node instanceof HTMLElement)) return;
   if (node.dataset.pane) return `pane:${node.dataset.pane}`;
+  // The wrapper a row sits in. Without a key of its own it was matched by position, and a row
+  // that changed places was thrown away and rebuilt along with its avatar.
+  if (node.dataset.seat) return `seat:${node.dataset.seat}`;
   if (node.dataset.rosterKey) return `group:${node.dataset.rosterKey}`;
   if (node.dataset.money) return `money:${node.dataset.money}`;
   if (node.id) return `id:${node.id}`;

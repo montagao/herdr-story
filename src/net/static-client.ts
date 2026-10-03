@@ -54,6 +54,13 @@ export class StaticBridgeClient implements OfficeClient {
     this.random = mulberry32(options.seed ?? 7);
     this.now = options.now ?? (() => Date.now());
     const shipped = new Map(this.studio.employees.map(e => [e.id, e.shipped]));
+    // The bridge decorates live agents from their employee record; a snapshot carries both halves
+    // separately, so the star and the look come from the employee here too.
+    const employees = new Map(this.studio.employees.map(e => [e.id, e]));
+    for (const a of this.agents) {
+      const employee = a.employee_id ? employees.get(a.employee_id) : undefined;
+      if (employee) { a.favorite = employee.favorite; a.office_look ??= { body: employee.body, face: employee.face }; }
+    }
     this.cast = this.agents.filter(a => a.employee_id && (shipped.get(a.employee_id) ?? 0) > 0).map(a => a.pane_id);
     const now = this.now();
     for (const a of this.agents) {

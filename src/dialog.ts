@@ -19,12 +19,41 @@ import { supportsAgentSettings } from '../shared/agent-settings';
 import { renderTerminal } from './terminal-renderer';
 import { renderMarkdown } from './markdown';
 import { pendingQueueIds, type PendingPrompt } from './net/queue-reconcile';
+import { dismissOnBackdrop, replayAnimation, snapShut } from './motion';
+import './dialog.css';
 export { renderTerminal } from './terminal-renderer';
 
 type QueuedReceipt = { id: string; text: string; state: 'queuing' | AgentQueueState; queuedAt: number; error?: string };
-type OutboxReceipt = { id: string; text: string; images: Attachment[]; state: 'sending' | 'accepted' | 'working' | 'failed' | 'uncertain'; error?: string };
-type Conversation = { agent: AgentInfo; draft: string; images: Attachment[]; scroll?: number; follow?: boolean; outbox: OutboxReceipt[] };
+/** `seen` is how many turns already carried these words when the message was sent, so an older
+ *  "continue" is not taken for this one. `filed` latches once the transcript shows the message, or
+ *  its turn has ended, or the agent never started on it: from then on its receipt is history. */
+type OutboxReceipt = { id: string; text: string; images: Attachment[]; state: 'sending' | 'accepted' | 'working' | 'failed' | 'uncertain'; error?: string; seen?: number; filed?: boolean };
+type Reading = { scroll: number; follow: boolean };
+/** Memory only, like the screen cache: what the agent said never goes into browser storage. */
+type Conversation = { agent: AgentInfo; draft: string; images: Attachment[]; scroll?: number; follow?: boolean; outbox: OutboxReceipt[]; turns?: Turn[]; transcript?: Reading };
 const QUEUE_HISTORY_KEY = 'herdr-story:queued-prompts';
+/** How long a delivered message may wait for the agent to start on it before its receipt stops
+ *  being held under the conversation. A slash command or an answer to a menu never becomes a turn. */
+const RECEIPT_HOLD_MS = 8000;
+const HIRE_FIELDS = ['kind', 'name', 'mode', 'workspace_id', 'cwd', 'label', 'model', 'effort', 'task'] as const;
+type HireDraft = Record<typeof HIRE_FIELDS[number], string>;
+
+/** 16px icons on the pixel lattice of src/icons.ts, for the controls that used to be glyphs. */
+const icon = (rects: number[][]) => `<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" shape-rendering="crispEdges" aria-hidden="true">${rects.map(([x, y, w, h]) => `<rect x="${x}" y="${y}" width="${w}" height="${h}"/>`).join('')}</svg>`;
+const CLOSE_ICON = icon([[3, 3, 2, 2], [5, 5, 2, 2], [7, 7, 2, 2], [9, 9, 2, 2], [11, 11, 2, 2], [11, 3, 2, 2], [9, 5, 2, 2], [5, 9, 2, 2], [3, 11, 2, 2]]);
+/** The return key: down the right side, along the bottom, and an arrowhead pointing left. */
+const ENTER_ICON = icon([[12, 3, 2, 8], [5, 9, 9, 2], [4, 8, 2, 4], [6, 7, 1, 6], [2, 9, 2, 2]]);
+const CLOSE_BUTTON = `<button type="button" class="close" aria-label="Close">${CLOSE_ICON}</button>`;
+const STOP_LABEL = '<i class="stop-mark" aria-hidden="true"></i>Stop task';
+const words = (text?: string) => (text ?? '').replace(/\s+/g, ' ').trim();
+/** Play a one-shot animation class and take it off again: a node that is hidden and shown later
+ *  would otherwise make its entrance twice. */
+function playOnce(el: HTMLElement, name: string) {
+  replayAnimation(el, name);
+  el.addEventListener('animationend', () => el.classList.remove(name), { once: true });
+}
+/** Stands in for the reply of a turn the agent is still working on. */
+const PENDING = '\0';
 
 /** What a pane says, minus the parts of a TUI that only make sense on a live screen: trailing
  *  whitespace, the input box and status bar a coding agent keeps pinned at the bottom (rules of
@@ -62,6 +91,50 @@ const VIEW_KEY = 'herdr-story.output-view';
 function readView(): OutputView { try { return localStorage.getItem(VIEW_KEY) === 'screen' ? 'screen' : 'conversation'; } catch { return 'conversation'; } }
 function saveView(view: OutputView) { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private mode */ } }
 
+/** Whether a scroll box is following its newest content. Geometry cannot answer that by itself: a
+ *  box that sat at the bottom stops being there the moment anything under it grows (a receipt, a
+ *  queued prompt, an attached image), and one that was painted while its face was hidden was never
+ *  anywhere. So following is remembered, only the reader scrolling away ends it, and the box is
+ *  put back on its last line whenever its size changes underneath it. */
+class Follow {
+  pinned = true;
+  private top = 0;
+  private shown: boolean;
+  private observer: ResizeObserver;
+  constructor(private box: HTMLElement) {
+    this.shown = box.clientHeight > 0;
+    box.addEventListener('scroll', () => {
+      if (!box.clientHeight) return;    // a hidden face has no position worth remembering
+      this.top = box.scrollTop;
+      this.pinned = box.scrollHeight - box.clientHeight - box.scrollTop < 40;
+    }, { passive: true });
+    this.observer = new ResizeObserver(() => {
+      const shown = box.clientHeight > 0;
+      if (shown && this.pinned) { if (!selectingIn(box)) box.scrollTop = box.scrollHeight; }
+      // a face coming back from hidden reopens where it was being read
+      else if (shown && !this.shown) box.scrollTop = this.top;
+      this.shown = shown;
+    });
+    this.observer.observe(box);
+  }
+  /** Go to the newest line and stay there. */
+  pin() { this.pinned = true; this.box.scrollTop = this.box.scrollHeight; this.top = this.box.scrollTop; }
+  /** Return to a place the reader had scrolled to. */
+  hold(top: number) { this.pinned = false; this.top = top; this.box.scrollTop = top; }
+  /** What to restore next time. A visible box is measured, because a scroll made in this same
+   *  task has not reported itself yet; a hidden one can only be remembered. */
+  reading(): Reading {
+    const box = this.box;
+    return box.clientHeight ? { scroll: box.scrollTop, follow: box.scrollHeight - box.clientHeight - box.scrollTop < 40 } : { scroll: this.top, follow: this.pinned };
+  }
+  stop() { this.observer.disconnect(); }
+}
+/** A selection being made inside the box: moving the text under it would lose the reader's place. */
+function selectingIn(box: HTMLElement) {
+  const selection = box.ownerDocument.getSelection();
+  return !!selection && !selection.isCollapsed && box.contains(selection.anchorNode);
+}
+
 export class Dialog {
   private root = document.getElementById('dialog')!;
   private refreshTimer?: number;
@@ -96,6 +169,22 @@ export class Dialog {
   private repaintQueue?: () => void;
   private repaintOutbox?: () => void;
   private transcriptTurns: Turn[] = [];
+  /** What the conversation face was last painted from, so an unchanged poll costs nothing. */
+  private transcriptKey = '';
+  private turnParts = new WeakMap<HTMLElement, { asked: string; said: string }>();
+  /** Turns fetched while a roster row was hovered, for agents that have not been opened yet. */
+  private warmTurns = new Map<string, Turn[]>();
+  private outputFollow?: Follow;
+  private transcriptFollow?: Follow;
+  private recentKey = '';
+  private factsKey = '';
+  private detailsOpen = false;
+  /** What had the keyboard before the window opened; it gets it back when the window closes. */
+  private opener?: HTMLElement;
+  private hireDraft?: HireDraft;
+  /** A one-off line for the strip above the output: a new hire's welcome. */
+  private greeting?: { pane: string; text: string };
+  private lastShipped?: string;
   private stopOutput?: () => void;
   private launchToken = 0;
   private queueHistory = this.loadQueueHistory();
@@ -105,6 +194,8 @@ export class Dialog {
   progressOf?: (paneId: string) => AgentProgress;
   onJournalEntry?: (id: string) => void;
   onProfile?: (a: AgentInfo) => void;
+  /** A hire from the recruitment desk went through; the office may want to look at the new desk. */
+  onHired?: (a: AgentInfo) => void;
   /** Set from the bridge snapshot. Remotely exposed bridges are read-only unless opted in. */
   writable = false;
   /** Shown under the reply box when nothing can be sent. The demo swaps in its own reason. */
@@ -114,7 +205,9 @@ export class Dialog {
       const result = await this.client.call('agent.read', { target, source, ...(source === 'visible' ? {} : { lines: 120 }) }, { signal }) as { read: { text: string } };
       return result.read.text;
     });
-    this.root.addEventListener('click', (e) => { if (e.target === this.root || (e.target as HTMLElement).classList.contains('close')) this.close(); });
+    dismissOnBackdrop(this.root, () => this.close());
+    // closest, not the target itself: the press lands on the icon inside the button
+    this.root.addEventListener('click', (e) => { if ((e.target as HTMLElement).closest('.close')) this.close(); });
     closeOnEscape(this.root, () => this.close());
     document.addEventListener('visibilitychange', () => {
       if (this.refreshTimer) clearTimeout(this.refreshTimer);
@@ -135,6 +228,15 @@ export class Dialog {
       if (document.hidden || !this.root.hidden || Date.now() - this.prefetchedAt < 500) return;
       this.prefetchedAt = Date.now();
       void this.terminalCache.read(agent).catch(() => {});
+      // The window opens on the conversation face, so that is the face worth having ready. An
+      // agent opened before already carries its turns in its conversation record.
+      const key = this.queueKey(agent);
+      if (this.view !== 'conversation' || this.conversations.get(key)?.turns) return;
+      void (this.client.call('agent.transcript', { target: agent.pane_id }) as Promise<{ available: boolean; turns: Turn[] }>).then(result => {
+        if (!result.available) return;
+        this.warmTurns.delete(key); this.warmTurns.set(key, result.turns);
+        while (this.warmTurns.size > 12) this.warmTurns.delete(this.warmTurns.keys().next().value!);
+      }).catch(() => {});
     }, 120);
   }
   private queueKey(a: AgentInfo) { return a.agent_session?.value || a.pane_id; }
@@ -176,6 +278,19 @@ export class Dialog {
         this.paintStatus('working');
         const note = this.root.querySelector<HTMLElement>('form.reply .reply-note');
         if (note) { note.textContent = 'queued prompt sent · watching live agent output'; note.setAttribute('data-state', 'sending'); }
+        // The prompt leaves the tray for the conversation rather than vanishing: it waits under
+        // the output as a delivered message until the transcript has it. Only a dispatch reported
+        // for this pane does this; a reconnect's replay of old deliveries carries no target.
+        const conversation = this.currentAgent && this.conversations.get(this.queueKey(this.currentAgent));
+        if (found && conversation) {
+          // Delivered, not yet seen to be worked on: a roster update that still says idle must not
+          // file it before the agent has picked it up.
+          const receipt: OutboxReceipt = { id: found.receipt.id, text: found.receipt.text, images: [], state: 'accepted', seen: this.turnsSaying(found.receipt.text) };
+          conversation.outbox = [...conversation.outbox, receipt].slice(-10);
+          this.repaintOutbox?.(); this.holdReceipt(conversation, receipt);
+          // one queued a moment ago has just had its own sound
+          if (Date.now() - found.receipt.queuedAt > 1000) audio.blip('send');
+        }
       }
       this.saveQueueHistory();
       return;
@@ -236,12 +351,16 @@ export class Dialog {
       const result = await this.client.call('agent.queue.status', { target: agent.pane_id, session: agent.agent_session.value }) as { pending: PendingPrompt[] };
       if (!Array.isArray(result.pending)) throw new Error('Queue status is unavailable.');
       const pending = pendingQueueIds(receipts, result.pending);
+      const states = () => (this.queueHistory.get(key) ?? []).map(receipt => `${receipt.id}:${receipt.state}`).join('|');
+      const before = states();
       for (const receipt of receipts) {
         if (this.findQueued(receipt.id)?.receipt !== receipt) continue;
         this.paintQueueItem({ id: receipt.id, target: '', text: receipt.text, queued_at: receipt.queuedAt,
           state: pending.has(receipt.id) ? 'queued' : 'sent' });
       }
-      if (this.currentAgent && this.queueKey(this.currentAgent) === key) this.repaintQueue?.();
+      // Rows are patched as they change. The tray is only rebuilt when one changed kind, so a
+      // poll that found nothing new does not fold a pasted prompt the reader had opened.
+      if (states() !== before && this.currentAgent && this.queueKey(this.currentAgent) === key) this.repaintQueue?.();
     } catch {
       // A disconnected or older bridge is not evidence that queued work was delivered.
     } finally { this.queueStatusPending.delete(key); }
@@ -254,26 +373,43 @@ export class Dialog {
     this.captureDraft?.(); this.captureDraft = undefined; this.repaintQueue = undefined; this.repaintOutbox = undefined;
     if (this.currentAgent) {
       const conversation = this.conversations.get(this.queueKey(this.currentAgent));
-      const pre = this.root.querySelector<HTMLElement>('.terminal-output');
-      if (conversation && pre) { conversation.scroll = pre.scrollTop; conversation.follow = pre.scrollHeight - pre.clientHeight - pre.scrollTop < 40; }
+      if (conversation && this.outputFollow) ({ scroll: conversation.scroll, follow: conversation.follow } = this.outputFollow.reading());
+      if (conversation && this.transcriptFollow) conversation.transcript = this.transcriptFollow.reading();
       this.terminalCache.cancel(this.currentAgent);
     }
+    this.outputFollow?.stop(); this.transcriptFollow?.stop();
+    this.outputFollow = this.transcriptFollow = undefined;
     this.stopOutput?.(); this.stopOutput = undefined;
   }
-  /** Provisional launch window; the returned token stops late completion stealing another chat. */
-  showLaunch(stage: string, token?: number, error = false): number {
+  /** Provisional launch window; the returned token stops late completion stealing another chat.
+   *  Later stages update the window that is already up, so nothing is rebuilt while it waits.
+   *  `step` moves the bar: 1 a desk, 2 the agent starting, 3 ready; left out, the bar stays put. */
+  showLaunch(stage: string, token?: number, error = false, step?: 1 | 2 | 3): number {
     if (token !== undefined && (token !== this.launchToken || !this.root.querySelector('.launch-win'))) return token;
-    if (token === undefined) { this.close(); this.launchToken++; }
-    this.root.innerHTML = `<div class="win launch-win"><div class="win-title"><b>Free agent</b><button type="button" class="close" aria-label="Close">✕</button></div><div class="win-body"><p class="launch-stage" role="status"></p><p>Your conversation will open here when the agent is ready.</p></div></div>`;
-    this.root.querySelector('.launch-stage')!.textContent = stage;
-    this.root.querySelector('.launch-stage')!.classList.toggle('failed', error);
+    if (token === undefined) {
+      // replacing the recruitment form is not a close: the keyboard stays with this window
+      const opener = this.root.hidden ? this.focused() : this.opener;
+      this.opener = undefined; this.close(); this.launchToken++; this.opener = opener;
+      this.root.innerHTML = `<div class="win launch-win"><div class="win-title"><b>Free agent</b>${CLOSE_BUTTON}</div><div class="win-body"><p class="launch-stage" role="status"></p><div class="launch-track" aria-hidden="true"><i></i></div><p>Your conversation will open here when the agent is ready.</p></div></div>`;
+    }
+    const win = this.root.querySelector<HTMLElement>('.launch-win')!, line = win.querySelector<HTMLElement>('.launch-stage')!;
+    line.textContent = stage; line.classList.toggle('failed', error);
+    win.classList.toggle('failed', error);
+    if (step) win.dataset.step = String(step);
     this.root.hidden = false;
     return this.launchToken;
   }
   launchActive(token: number) { return token === this.launchToken && !this.root.hidden && !!this.root.querySelector('.launch-win'); }
+  /** Whatever holds the keyboard outside this window, if it is something that can take it back. */
+  private focused() {
+    const active = document.activeElement;
+    return active instanceof HTMLElement && active !== document.body && !(active instanceof HTMLCanvasElement) && !this.root.contains(active) ? active : undefined;
+  }
   close() {
     this.saveConversation();
-    if (!this.root.hidden) audio.play('close');
+    const opener = this.root.hidden ? undefined : this.opener;
+    this.opener = undefined;
+    if (!this.root.hidden) snapShut(this.root.firstElementChild);
     this.generation++;
     this.liveConversation = false;
     this.openPane = undefined;
@@ -284,6 +420,9 @@ export class Dialog {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = undefined;
     this.root.hidden = true; this.root.innerHTML = '';
+    // Back to the roster row (or button) the window was opened from, so the list can be worked
+    // through from the keyboard. A window that opens straight after this one takes focus itself.
+    if (opener?.isConnected) opener.focus({ preventScroll: true });
   }
 
   private prunePreviews() {
@@ -295,7 +434,7 @@ export class Dialog {
    * decision: put a supported agent in a known workspace, or give it a fresh one. */
   openHire(workspaces: WorkspaceSummary[], agents: AgentInfo[], preferredWorkspace?: string, initial?: { task: string; project?: string; newWorkspace?: boolean; onTaskSent?: () => void }) {
     this.saveConversation();
-    audio.play('open');
+    if (this.root.hidden) this.opener = this.focused();
     let generation = ++this.generation;
     this.liveConversation = false; this.openPane = undefined; this.currentStatus = undefined;
     this.currentAgent = undefined;
@@ -313,7 +452,7 @@ export class Dialog {
       || agents.find((agent) => agent.cwd)?.cwd || '';
     const hasWorkspace = sorted.length > 0;
     this.root.innerHTML = `<div class="win hire-win">
-      <div class="win-title"><span class="hire-title-icon" aria-hidden="true">＋</span><span>Hire agent <small>recruitment desk</small></span><span class="close">✕</span></div>
+      <div class="win-title"><span class="hire-title-icon" aria-hidden="true">＋</span><span>Hire agent <small>recruitment desk</small></span>${CLOSE_BUTTON}</div>
       <div class="win-body hire-body">
         <section class="hire-banner"><span class="hire-banner-mark" aria-hidden="true">!</span><span><small>Staff application</small><b>Put another specialist to work</b><em>The bridge creates the desk, starts the agent, and sends its first task.</em></span></section>
         <form class="hire-form">
@@ -343,8 +482,22 @@ export class Dialog {
     }
     const kind = form.elements.namedItem('kind') as HTMLSelectElement;
     const name = form.elements.namedItem('name') as HTMLInputElement;
+    // A form dismissed by a stray Escape comes back as it was left. A task handed over by the
+    // front desk is a new application, and wins over anything remembered.
+    const draft = initial ? undefined : this.hireDraft;
+    if (draft) {
+      if ([...kind.options].some(option => option.value === draft.kind)) kind.value = draft.kind;
+      name.value = draft.name;
+    }
     const loadSettings = bindSettings(form.querySelector<HTMLElement>('.hire-settings')!, this.client);
-    void loadSettings(kind.value);
+    void loadSettings(kind.value).then(() => {
+      // the choices arrive after the form; a model typed in the meantime is left alone
+      const model = form.elements.namedItem('model') as HTMLInputElement, effort = form.elements.namedItem('effort') as HTMLSelectElement;
+      if (!draft || !form.isConnected || kind.value !== draft.kind || model.disabled || model.value) return;
+      model.value = draft.model; model.dispatchEvent(new Event('input', { bubbles: true }));
+      // the form remembers itself on change, so the effort is not lost to a second stray close
+      effort.value = draft.effort; effort.dispatchEvent(new Event('change', { bubbles: true }));
+    });
     let suggestedName = kind.value;
     kind.addEventListener('change', () => {
       if (!name.value.trim() || name.value.trim().toLowerCase() === suggestedName) name.value = kind.value;
@@ -358,6 +511,14 @@ export class Dialog {
       cwd.required = mode === 'new';
     };
     form.querySelectorAll<HTMLInputElement>('input[name="mode"]').forEach((radio) => radio.addEventListener('change', () => showMode(radio.value)));
+    if (draft) {
+      // a desk that was clicked says where the hire goes; otherwise the placement is as it was left
+      const mode = form.querySelector<HTMLInputElement>(`input[name="mode"][value="${draft.mode === 'new' ? 'new' : 'existing'}"]`)!;
+      if (!preferredWorkspace && !mode.disabled) mode.checked = true;
+      if (!preferredWorkspace && sorted.some(w => w.workspace_id === draft.workspace_id)) (form.elements.namedItem('workspace_id') as HTMLSelectElement).value = draft.workspace_id;
+      if (draft.cwd) (form.elements.namedItem('cwd') as HTMLInputElement).value = draft.cwd;
+      (form.elements.namedItem('label') as HTMLInputElement).value = draft.label;
+    }
     showMode((form.elements.namedItem('mode') as RadioNodeList).value);
     const note = form.querySelector<HTMLElement>('.hire-note')!;
     const task = form.elements.namedItem('task') as HTMLTextAreaElement;
@@ -372,7 +533,16 @@ export class Dialog {
         const mode = form.querySelector<HTMLInputElement>('input[name="mode"][value="new"]')!;
         mode.checked = true; showMode('new');
       }
+    } else if (draft) {
+      task.value = draft.task; taskDraft.refresh(true);
+      note.textContent = 'Picked up where you left off.';
     }
+    // Attached images are not remembered: their previews are released when the window closes.
+    const remember = () => {
+      const data = new FormData(form);
+      this.hireDraft = Object.fromEntries(HIRE_FIELDS.map(field => [field, String(data.get(field) ?? '')])) as HireDraft;
+    };
+    form.addEventListener('input', remember); form.addEventListener('change', remember);
     const tray = new ImageTray(form.querySelector<HTMLElement>('.hire-task .reply-attachments')!, taskNote, this.previewUrls, () => taskDraft.focus(), file => this.client.uploadImage(file));
     tray.listen(task, this.root.querySelector<HTMLElement>('.hire-win')!);
     form.addEventListener('submit', async (event) => {
@@ -384,6 +554,7 @@ export class Dialog {
       const initiallyDisabled = new Set(controls.filter((control) => control.disabled));
       controls.forEach((control) => control.disabled = true);
       form.setAttribute('aria-busy', 'true'); button.textContent = 'hiring…';
+      audio.blip('press');
       note.dataset.state = 'sending'; note.textContent = mode === 'new' ? 'Creating workspace and starting agent…' : 'Adding desk and starting agent…';
       const images = tray.take();
       const hireView = this.root.firstElementChild!;
@@ -392,7 +563,7 @@ export class Dialog {
         if (images.length) note.textContent = `Uploading ${images.length} image${images.length === 1 ? '' : 's'}…`;
         const taskText = await ImageTray.compose(String(data.get('task') ?? ''), images, (file) => this.client.uploadImage(file));
         if (generation !== this.generation) return;
-        launch = this.showLaunch(mode === 'new' ? 'Creating workspace…' : 'Adding desk…');
+        launch = this.showLaunch(mode === 'new' ? 'Creating workspace…' : 'Adding desk…', undefined, false, 1);
         this.root.querySelector('.win-title b')!.textContent = String(data.get('name') || 'New agent');
         generation = this.generation;
         const result = await this.client.call('agent.hire', {
@@ -400,12 +571,18 @@ export class Dialog {
           model: data.get('model') || '', effort: data.get('effort') || '',
           ...(mode === 'new' ? { cwd: data.get('cwd'), label: data.get('label') } : { workspace_id: data.get('workspace_id') }),
         }, { onProgress: stage => {
-          this.showLaunch(stage === 'creating' ? 'Creating workspace…' : stage === 'starting' ? 'Starting agent…' : 'Ready · opening conversation…', launch);
-          if (launch !== undefined && this.launchActive(launch)) this.root.querySelector('.win-title b')!.textContent = String(data.get('name') || 'New agent');
+          if (stage === 'creating') this.showLaunch('Creating workspace…', launch, false, 1);
+          else if (stage === 'starting') this.showLaunch('Starting agent…', launch, false, 2);
+          else this.showLaunch('Ready · opening conversation…', launch, false, 3);
         } }) as { prompt_error?: string; agent?: AgentInfo };
+        this.hireDraft = undefined;
+        audio.blip(result.prompt_error ? 'error' : 'ok');
         if (!result.prompt_error) initial?.onTaskSent?.();
+        if (result.agent) this.onHired?.(result.agent);
         if (!this.launchActive(launch)) return;
         if (result.agent) {
+          this.welcome(result.agent, mode === 'new' ? String(data.get('label') || '').trim() || String(data.get('cwd')).split('/').filter(Boolean).pop()
+            : sorted.find(workspace => workspace.workspace_id === data.get('workspace_id'))?.label);
           await this.open(result.agent);
           if (result.prompt_error && this.openPane === result.agent.pane_id) {
             const replyNote = this.root.querySelector<HTMLElement>('.reply-note');
@@ -426,6 +603,7 @@ export class Dialog {
         showMode((form.elements.namedItem('mode') as RadioNodeList).value);
         form.removeAttribute('aria-busy'); button.innerHTML = '<span aria-hidden="true">＋</span> hire agent';
         note.dataset.state = 'error'; note.textContent = (error as Error).message;
+        audio.blip('error');
       }
     });
     window.setTimeout(() => kind.focus(), 50);
@@ -442,15 +620,27 @@ export class Dialog {
     if (this.currentAgent && this.queueKey(this.currentAgent) === key) this.captureDraft = undefined;
     void this.open(a);
   }
-  async open(a: AgentInfo) {
+  /** Say hello in the strip above the output when a new hire's conversation opens. */
+  welcome(a: AgentInfo, workspace = a.workspace_name?.trim()) {
+    const greeting = this.greeting = { pane: a.pane_id, text: `Welcome aboard, ${employeeName(a)}${workspace ? ` · desk in ${workspace}` : ''}` };
+    window.setTimeout(() => { if (this.greeting === greeting) { this.greeting = undefined; this.paintConversationFreshness(); } }, 8000);
+  }
+  /** `caret` is the composer's selection when the window is being rebuilt under someone typing. */
+  async open(a: AgentInfo, caret?: [number, number]) {
+    // A tab, or the same agent rebuilt, replaces a window that is already up: the details stay as
+    // they were, and only a real opening has an opener to give the keyboard back to.
+    if (this.root.hidden) { this.opener = this.focused(); this.detailsOpen = false; }
+    else this.detailsOpen = !!this.root.querySelector<HTMLDetailsElement>('.conversation-details')?.open;
     this.saveConversation();
-    this.transcriptTurns = []; this.repaintOutbox = undefined;
+    this.transcriptTurns = []; this.transcriptKey = ''; this.recentKey = ''; this.factsKey = factsOf(a); this.repaintOutbox = undefined;
+    this.lastShipped = undefined;
     const conversationKey = this.queueKey(a);
     const conversation = this.conversations.get(conversationKey) ?? { agent: a, draft: '', images: [], outbox: [] };
     conversation.agent = a; this.conversations.delete(conversationKey); this.conversations.set(conversationKey, conversation);
     while (this.conversations.size > 12) this.conversations.delete(this.conversations.keys().next().value!);
+    conversation.turns ??= this.warmTurns.get(conversationKey);
+    this.warmTurns.delete(conversationKey);
     this.prunePreviews();
-    audio.play('open');
     const generation = ++this.generation;
     this.liveConversation = false;
     this.openPane = a.pane_id;
@@ -475,32 +665,34 @@ export class Dialog {
       <div class="stat-grid">${WORK_KINDS.map((stat) => `<div class="stat" data-stat="${stat}"><span class="stat-icon" style="${statIconStyle(stat)}"></span><span>${WORK[stat].short}<small>${WORK[stat].stat}</small></span><b>${progress.stats[stat]}</b></div>`).join('')}</div>
     </section>` : '';
     this.root.innerHTML = `<div class="win conversation-win">
-      <div class="win-title"><div class="avatar"></div><span>${esc(employeeName(a))} <small style="color:#536471">${handleOf(kind, a.pane_id)}</small></span>${progress ? `<span class="title-level" data-level-tier="${tierForLevel(progress.level)}" title="${progress.rank} · Level ${progress.level}">Lv ${progress.level}</span>` : ''}${a.employee_id ? '<button type="button" class="employee-customize">Employee profile</button>' : ''}<span class="close">✕</span></div>
-      <nav class="recent-conversations" aria-label="Recent agents">${[...this.conversations.entries()].reverse().map(([key, c]) => `<button type="button" data-conversation="${esc(key)}" aria-current="${key === conversationKey ? 'page' : 'false'}">${esc(employeeName(c.agent))}${c.draft || c.images.length ? ' · draft' : ''}</button>`).join('')}</nav>
+      <div class="win-title"><div class="avatar"></div><span><span class="title-name">${esc(employeeName(a))}</span> <small style="color:#536471">${handleOf(kind, a.pane_id)}</small></span>${progress ? `<span class="title-level" data-level-tier="${tierForLevel(progress.level)}" title="${progress.rank} · Level ${progress.level}">Lv ${progress.level}</span>` : ''}${a.employee_id ? '<button type="button" class="employee-customize">Employee profile</button>' : ''}${CLOSE_BUTTON}</div>
+      <nav class="recent-conversations" aria-label="Recent agents"></nav>
       <div class="win-body">
         <div class="conversation-summary"><span class="st ${a.agent_status}">${statusLabel(a.agent_status)}</span><span class="conversation-task">${esc(taskOf(a)) || 'Ready for a prompt'}</span></div>
-        <details class="conversation-details"><summary>Agent details · workspace, career &amp; controls</summary>
+        <details class="conversation-details"${this.detailsOpen ? ' open' : ''}><summary>Agent details · workspace, career &amp; controls</summary>
         <section class="workspace-marquee" aria-label="Herdr workspace"><span class="workspace-mark" aria-hidden="true">W</span><span><small>Herdr workspace</small><b title="${esc(workspaceName)}">${esc(workspaceName)}</b></span><code>${esc(workspaceId)}</code></section>
         ${sheet}
         ${this.writable && supportsAgentSettings(kind) ? `<details class="live-agent-settings"><summary>Model &amp; effort</summary>${settingsFields(true)}${kind === 'codex' ? '<button type="button" data-settings-picker>Open terminal picker</button>' : ''}</details>` : ''}
-        <dl><dt>status</dt><dd><span class="st ${a.agent_status}">${statusLabel(a.agent_status)}</span></dd>
-        <dt>task</dt><dd>${esc(taskOf(a)) || '—'}</dd>${a.last_prompt && a.last_prompt.split('\n')[0].trim() !== taskOf(a) ? `<dt>asked</dt><dd class="asked">${esc(a.last_prompt.split('\n')[0].trim())}</dd>` : ''}${a.activity && a.agent_status === 'working' ? `<dt>now</dt><dd>${esc(a.activity)}</dd>` : ''}
-        <dt>pane</dt><dd>${esc(a.pane_id)}</dd>
-        <dt>cwd</dt><dd>${esc(a.foreground_cwd || a.cwd || '—')}</dd></dl>
+        <dl class="agent-facts">${factsOf(a)}</dl>
         ${this.writable ? `<section class="agent-exit" aria-label="Exit agent">
           <span><b>Exit agent</b><small>Ends this agent and closes its Herdr pane.</small></span>
           <button type="button" data-request-exit>exit agent</button>
           <div class="agent-exit-confirm" hidden role="alert"><span>Close pane <code>${esc(a.pane_id)}</code>? This ends the running agent.</span><button type="button" data-confirm-exit>yes, exit + close pane</button><button type="button" data-cancel-exit>cancel</button></div>
         </section>` : ''}
         </details>
-        <div class="terminal-tools"><div class="terminal-status" role="status"></div><div class="terminal-actions"><div class="view-switch" role="group" aria-label="Output view"><button type="button" data-view="conversation" title="What the agent said, from its own transcript">Conversation</button><button type="button" data-view="screen" title="The pane as it is on screen">Screen</button></div><button type="button" class="terminal-live" hidden>Back to live output</button><button type="button" class="terminal-history">Load earlier output</button>${this.writable ? '<button type="button" class="pane-widen" title="Zoom this pane in Herdr so its output has the whole tab. Click again to restore the split.">Widen pane</button>' : ''}</div></div><div class="agent-completion" hidden><span></span><button type="button" data-completion-journal>Open journal entry</button></div><div class="agent-wait-notice" role="status" hidden></div><div class="conversation-freshness" hidden><span role="status"></span><button type="button" data-live-screen>View live screen</button></div><div class="terminal-frame"><pre class="terminal-output" tabindex="0" aria-label="Agent output">loading…</pre><div class="transcript-output" tabindex="0" aria-label="Conversation" hidden></div></div>
+        <div class="terminal-tools"><div class="terminal-status" role="status"></div><div class="terminal-actions"><button type="button" class="terminal-live" hidden>Back to live output</button><button type="button" class="terminal-history">Load earlier output</button>${this.writable ? '<button type="button" class="pane-widen" title="Zoom this pane in Herdr so its output has the whole tab. Click again to restore the split.">Widen pane</button>' : ''}<div class="view-switch" role="group" aria-label="Output view"><button type="button" data-view="conversation" title="What the agent said, from its own transcript">Conversation</button><button type="button" data-view="screen" title="The pane as it is on screen">Screen</button></div></div></div><div class="conversation-rail"><div class="agent-wait-notice" role="status" hidden></div><div class="agent-completion" hidden><span></span><button type="button" data-completion-journal>Open journal entry</button></div><div class="conversation-freshness"><span role="status"></span><button type="button" data-other-face></button></div></div><div class="terminal-frame"><pre class="terminal-output" tabindex="0" aria-label="Agent output">loading…</pre><div class="transcript-output" tabindex="0" aria-label="Conversation" hidden></div></div>
         ${this.writable
-          ? `<div class="prompt-outbox" aria-label="Your recent messages"></div><div class="prompt-queue" hidden aria-label="Queued prompts"></div><form class="reply${canQueue ? ' can-queue' : ''}">${canQueue ? `<div class="reply-stop-controls"><button type="button" data-stop-task${a.agent_status === 'working' ? '' : ' hidden'}>■ Stop task</button><button type="button" data-restore-prompt hidden>Restore last prompt</button></div>` : ''}<div class="reply-attachments" hidden></div><textarea rows="2" maxlength="20000" aria-label="Message to ${displayName(kind)}" placeholder="${a.agent_status === 'blocked' ? 'answer them…' : 'send a prompt to this agent…'}"></textarea><button type="submit">send</button>${canQueue ? `<button type="button" class="queue-button" data-queue title="Queue this prompt after ${displayName(kind)}’s current work (Tab)"><kbd>Tab</kbd><span>queue</span></button>` : ''}<button type="button" data-keys="Enter" title="press Enter in the agent's terminal">↵</button><span class="reply-note" aria-live="polite">Paste or drop images · Enter sends now${canQueue ? ' · Tab queues for later' : ''} · Shift+Enter for a new line</span></form>`
+          ? `<div class="prompt-outbox" aria-label="Your recent messages"></div><div class="prompt-queue" hidden aria-label="Queued prompts"></div><form class="reply${canQueue ? ' can-queue' : ''}">${canQueue ? `<div class="reply-stop-controls"><button type="button" data-stop-task aria-label="■ Stop task"${a.agent_status === 'working' ? '' : ' hidden'}>${STOP_LABEL}</button><button type="button" data-restore-prompt hidden>Restore last prompt</button></div>` : ''}<div class="reply-attachments" hidden></div><textarea rows="2" maxlength="20000" aria-label="Message to ${displayName(kind)}" placeholder="${a.agent_status === 'blocked' ? 'answer them…' : 'send a prompt to this agent…'}"></textarea><button type="submit">send</button>${canQueue ? `<button type="button" class="queue-button" data-queue title="Queue this prompt after ${displayName(kind)}’s current work (Tab)"><kbd>Tab</kbd><span>queue</span></button>` : ''}<button type="button" data-keys="Enter" title="press Enter in the agent's terminal" aria-label="Press Enter in the agent's terminal">${ENTER_ICON}</button><span class="reply-note" aria-live="polite">${matchMedia('(pointer:coarse)').matches ? `Paste images · send goes now${canQueue ? ' · queue holds it for later' : ''}` : `Paste or drop images · Enter sends now${canQueue ? ' · Tab queues for later' : ''} · Shift+Enter for a new line`}</span></form>`
           : `<div class="reply-note ro">${this.readOnlyNote}</div>`}
       </div></div>`;
-    this.root.querySelectorAll<HTMLButtonElement>('[data-conversation]').forEach(button => {
-      button.addEventListener('click', () => { const next = this.conversations.get(button.dataset.conversation!); if (next && next !== conversation) void this.open(next.agent); });
+    // one listener on the strip: its tabs are patched as conversations come, go and gain drafts
+    this.root.querySelector('.recent-conversations')!.addEventListener('click', event => {
+      const key = (event.target as HTMLElement).closest<HTMLElement>('[data-conversation]')?.dataset.conversation;
+      const next = key === undefined ? undefined : this.conversations.get(key);
+      if (!next || next === this.conversations.get(this.queueKey(this.currentAgent ?? a))) return;
+      audio.blip('tick'); void this.open(next.agent);
     });
+    this.paintRecent();
     this.root.querySelector('.avatar')!.appendChild(avatarCanvas(a.pane_id, 32));
     this.root.querySelector('[data-completion-journal]')?.addEventListener('click', () => {
       const entry = this.currentAgent?.completed_task;
@@ -509,11 +701,14 @@ export class Dialog {
     this.root.querySelector('.employee-customize')?.addEventListener('click', () => { this.close(); this.onProfile?.(a); });
     this.root.hidden = false;
     const pre = this.root.querySelector('pre')!;
+    const output = this.outputFollow = new Follow(pre);
+    const transcript = this.transcriptFollow = new Follow(this.root.querySelector<HTMLElement>('.transcript-output')!);
     const cached = this.terminalCache.peek(a);
     if (cached?.source === 'visible') this.latestOutput = cached;
     if (cached) {
       renderTerminal(pre, tidyTerminal(cached.text) || '(no output)');
-      pre.dataset.loaded = 'true'; pre.scrollTop = conversation.follow === false ? conversation.scroll ?? 0 : pre.scrollHeight;
+      pre.dataset.loaded = 'true';
+      if (conversation.follow === false) output.hold(conversation.scroll ?? 0); else output.pin();
       this.markStale('Last view · updating…');
     }
     const historyButton = this.root.querySelector<HTMLButtonElement>('.terminal-history')!;
@@ -555,7 +750,7 @@ export class Dialog {
       this.terminalCache.cancel(a);
       historyButton.disabled = false; historyButton.textContent = 'Load earlier output'; loadedEarlier = false;
       if (this.latestOutput) this.paintOutputNow(pre, this.latestOutput);
-      pre.scrollTop = pre.scrollHeight;
+      output.pin();
       void this.refresh(this.currentAgent ?? a, pre);
     });
     const scrollUp = () => {
@@ -576,8 +771,8 @@ export class Dialog {
       // The scrollbar can also be dragged without a wheel, touch swipe, or key press.
       if (event.clientX - pre.getBoundingClientRect().left >= pre.clientWidth) holdOutput();
     });
-    this.root.querySelector('[data-live-screen]')?.addEventListener('click', () => {
-      this.root.querySelector<HTMLButtonElement>('[data-view="screen"]')?.click();
+    this.root.querySelector('[data-other-face]')!.addEventListener('click', () => {
+      this.root.querySelector<HTMLButtonElement>('[data-view][aria-pressed="false"]')?.click();
     });
     this.stopOutput = this.client.watchOutput(a.pane_id, snapshot => {
       if (generation !== this.generation || document.hidden) return;
@@ -587,8 +782,16 @@ export class Dialog {
     this.transcriptAvailable = undefined; this.transcriptCheckFailed = false;
     this.paintStatus(this.currentStatus);
     this.applyView();
+    // The conversation face opens on what it last showed, the way the screen opens on its cached
+    // frame; the transcript read below only has to bring it up to date.
+    if (conversation.turns) {
+      this.paintTranscript(conversation.turns);
+      if (conversation.transcript?.follow === false) transcript.hold(conversation.transcript.scroll);
+      this.paintConversationFreshness();
+    }
     this.root.querySelectorAll<HTMLButtonElement>('[data-view]').forEach(button => button.addEventListener('click', () => {
       if (button.disabled) return;
+      if (button.getAttribute('aria-pressed') !== 'true') audio.blip('tick');
       this.view = button.dataset.view as OutputView; saveView(this.view); this.applyView();
       if (this.view === 'conversation') void this.refreshTranscript(a, generation);
       else if (this.latestOutput && !this.readingHistory) this.paintOutputNow(pre, this.latestOutput);
@@ -622,8 +825,8 @@ export class Dialog {
         button.disabled = true;
         try {
           const result = await this.client.call('agent.settings.picker', { target: a.pane_id }) as { message: string };
-          note.textContent = result.message;
-        } catch (error) { note.textContent = (error as Error).message; }
+          note.textContent = result.message; note.dataset.state = '';
+        } catch (error) { note.textContent = (error as Error).message; note.dataset.state = 'error'; }
         finally { button.disabled = false; }
       });
       settings.querySelectorAll<HTMLButtonElement>('[data-apply-setting]').forEach(button => {
@@ -631,18 +834,19 @@ export class Dialog {
           const field = button.dataset.applySetting!;
           const value = settings.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${field}"]`)!.value.trim();
           const note = settings.querySelector<HTMLElement>('.agent-settings-note')!;
-          if (!value) { note.textContent = `Choose a ${field} first.`; return; }
+          const say = (text: string, state = '') => { note.textContent = text; note.dataset.state = state; };
+          if (!value) { say(`Choose a ${field} first.`); return; }
           const buttons = [...settings.querySelectorAll<HTMLButtonElement>('button')];
           buttons.forEach(b => b.disabled = true);
-          note.textContent = 'Applying…';
+          say('Applying…');
           try {
             const result = await this.client.call('agent.settings.update', { target: a.pane_id, [field]: value }) as { message: string };
             if (generation !== this.generation) return;
-            note.textContent = result.message;
+            say(result.message, 'sent'); audio.blip('ok');
             this.onSettingsApplied?.(a, field, value);
             await this.refresh(a, pre);
           } catch (error) {
-            if (generation === this.generation) note.textContent = (error as Error).message;
+            if (generation === this.generation) { say((error as Error).message, 'error'); audio.blip('error'); }
           } finally { buttons.forEach(b => b.disabled = false); }
         });
       });
@@ -692,8 +896,8 @@ export class Dialog {
       const draft = new PastedDraft(input, setNote);
       const tray = new ImageTray(form.querySelector<HTMLElement>('.reply-attachments')!, setNote, this.previewUrls, () => draft.focus(), file => this.client.uploadImage(file));
       tray.listen(input, form);
-      input.value = conversation.draft; draft.refresh(true); tray.restore(conversation.images);
-      const capture = () => { conversation.draft = input.value; conversation.images = [...tray.attachments]; };
+      input.value = conversation.draft; draft.refresh(!caret); tray.restore(conversation.images);
+      const capture = () => { conversation.draft = input.value; conversation.images = [...tray.attachments]; this.paintRecent(); };
       this.captureDraft = capture;
       input.addEventListener('input', capture);
       const schedulePrompt = (run: () => Promise<boolean>) => {
@@ -702,49 +906,59 @@ export class Dialog {
         void pending.finally(() => { if (this.promptChains.get(queueKey) === pending) this.promptChains.delete(queueKey); });
         return pending;
       };
+      // Rows are kept by receipt and rebuilt only when their own state changes, so a poll that
+      // repaints the transcript does not fold a pasted prompt someone has just opened.
+      const echoes = new Map<OutboxReceipt, { row: HTMLElement; key: string }>();
+      const uploadOf = (image: Attachment) => image.path ? 'Uploaded' : image.uploadError ? 'Upload failed' : image.uploading ? 'Uploading…' : 'Waiting to upload';
+      const echo = (receipt: OutboxReceipt) => {
+        const row = document.createElement('div'); row.className = 'prompt-echo'; row.dataset.messageId = receipt.id;
+        const heading = document.createElement('div'); const who = document.createElement('strong'); who.textContent = 'You';
+        heading.append(who, document.createElement('span'));
+        const body = document.createElement('div'); body.className = 'prompt-echo-text'; renderPromptText(body, receipt.text);
+        const pictures = document.createElement('div'); pictures.className = 'prompt-echo-images';
+        renderPromptImages(pictures, receipt.images.map(image => ({ name: image.file.name, url: image.url, status: uploadOf(image) })));
+        row.append(heading, body, pictures);
+        if (receipt.state === 'failed' || receipt.state === 'uncertain') {
+          const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = receipt.state === 'uncertain' ? 'Check delivery' : 'Retry message'; retry.title = receipt.error ?? '';
+          retry.addEventListener('click', async () => {
+            if (receipt.state === 'uncertain') {
+              retry.disabled = true;
+              try {
+                const status = await this.client.call('agent.message.status', { target: a.pane_id, message_id: receipt.id }) as { state: string };
+                if (status.state === 'confirmed') { receipt.state = 'accepted'; paintOutbox(); this.holdReceipt(conversation, receipt); }
+                else setNote('Delivery is still unconfirmed · check the agent output before sending a new message', 'error');
+              } catch (error) { setNote((error as Error).message, 'error'); }
+              finally { retry.disabled = false; }
+              return;
+            }
+            if (input.value.trim() === receipt.text && tray.attachments.length === receipt.images.length && tray.attachments.every((image, i) => image === receipt.images[i])) { input.value = ''; draft.refresh(); tray.take(); capture(); }
+            receipt.state = 'sending'; paintOutbox();
+            void schedulePrompt(() => send('agent.prompt', { text: receipt.text, message_id: receipt.id }, receipt.text, receipt.images, undefined, receipt));
+          }); row.append(retry);
+        }
+        return row;
+      };
       const paintOutbox = () => {
         if (generation !== this.generation) return;
         const host = this.root.querySelector<HTMLElement>('.prompt-outbox')!;
         const follow = host.scrollHeight - host.clientHeight - host.scrollTop < 40;
-        host.replaceChildren();
-        for (const receipt of conversation.outbox) {
-          const row = document.createElement('div'); row.className = 'prompt-echo'; row.dataset.messageId = receipt.id;
-          row.dataset.deliveryState = receipt.state;
-          const recorded = receipt.images.length > 0 && this.transcriptTurns.some(turn =>
-            (!receipt.text.trim() || turn.prompt?.trim() === receipt.text.trim()) && receipt.images.every(image =>
-              image.path && turn.images?.some(saved => saved.path === image.path)));
-          row.dataset.imagesPending = String(receipt.images.length > 0 && !recorded);
-          const heading = document.createElement('div'); const who = document.createElement('strong'); who.textContent = 'You';
-          const state = document.createElement('span'); state.textContent = receipt.state === 'sending' ? 'sending…' : receipt.state;
-          heading.append(who, state);
-          const body = document.createElement('div'); body.className = 'prompt-echo-text'; renderPromptText(body, receipt.text);
-          const pictures = document.createElement('div'); pictures.className = 'prompt-echo-images';
-          renderPromptImages(pictures, receipt.images.map(image => ({ name: image.file.name, url: image.url,
-            status: image.path ? 'Uploaded' : image.uploadError ? 'Upload failed' : image.uploading ? 'Uploading…' : 'Waiting to upload' })));
-          row.append(heading, body, pictures);
-          if (receipt.state === 'failed' || receipt.state === 'uncertain') {
-            const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = receipt.state === 'uncertain' ? 'Check delivery' : 'Retry message'; retry.title = receipt.error ?? '';
-            retry.addEventListener('click', async () => {
-              if (receipt.state === 'uncertain') {
-                retry.disabled = true;
-                try {
-                  const status = await this.client.call('agent.message.status', { target: a.pane_id, message_id: receipt.id }) as { state: string };
-                  if (status.state === 'confirmed') { receipt.state = 'accepted'; paintOutbox(); }
-                  else setNote('Delivery is still unconfirmed · check the agent output before sending a new message', 'error');
-                } catch (error) { setNote((error as Error).message, 'error'); }
-                finally { retry.disabled = false; }
-                return;
-              }
-              if (input.value.trim() === receipt.text && tray.attachments.length === receipt.images.length && tray.attachments.every((image, i) => image === receipt.images[i])) { input.value = ''; draft.refresh(); tray.take(); capture(); }
-              receipt.state = 'sending'; paintOutbox();
-              void schedulePrompt(() => send('agent.prompt', { text: receipt.text, message_id: receipt.id }, receipt.text, receipt.images, undefined, receipt));
-            }); row.append(retry);
-          }
-          host.append(row);
-        }
+        const rows = conversation.outbox.map(receipt => {
+          // delivered and being worked on are the same row with a different word on it
+          const delivered = receipt.state === 'accepted' || receipt.state === 'working';
+          const key = JSON.stringify([delivered || receipt.state, receipt.error ?? '', receipt.images.map(uploadOf)]);
+          const kept = echoes.get(receipt);
+          const row = kept?.key === key ? kept.row : echo(receipt);
+          echoes.set(receipt, { row, key });
+          row.dataset.deliveryState = receipt.state; row.dataset.filed = String(this.filed(receipt));
+          row.querySelector(':scope > div > span')!.textContent = receipt.state === 'sending' ? 'sending…' : receipt.state;
+          return row;
+        });
+        for (const receipt of echoes.keys()) if (!conversation.outbox.includes(receipt)) echoes.delete(receipt);
+        if (rows.length !== host.children.length || rows.some((row, index) => host.children[index] !== row)) host.replaceChildren(...rows);
         if (follow) host.scrollTop = host.scrollHeight;
       };
       this.repaintOutbox = paintOutbox;
+      if (a.agent_status !== 'working') this.settleReceipts(conversation);
       paintOutbox();
       /** Forget one receipt: out of the stored history, and off the screen. */
       const drop = (receipt: QueuedReceipt, node?: HTMLElement) => {
@@ -856,7 +1070,7 @@ export class Dialog {
           }
           const result = await this.client.call(method, { target: a.pane_id, ...callParams }) as { state?: AgentQueueState } | undefined;
           this.terminalCache.invalidate(a); if (generation === this.generation) this.readVersion++;
-          if (receipt) { receipt.state = 'accepted'; paintOutbox(); }
+          if (receipt) { receipt.state = 'accepted'; paintOutbox(); this.holdReceipt(conversation, receipt); }
           if (queued) {
             if (result?.state === 'sent') {
               this.paintQueueItem({ id: queued.receipt.id, target: a.pane_id, text: queued.receipt.text,
@@ -868,8 +1082,8 @@ export class Dialog {
           }
           const queuePending = queued ? !!this.findQueued(queued.receipt.id) : false;
           if (queued) void this.refreshNativeQueue(a);
-          setNote(method === 'agent.prompt' ? 'accepted · waiting for agent output'
-            : method === 'agent.queue' ? queuePending ? 'queued · type another and press Tab' : 'queued prompt sent · watching live agent output'
+          setNote(method === 'agent.prompt' ? `delivered to ${employeeName(conversation.agent)} · waiting for a reply`
+            : method === 'agent.queue' ? queuePending ? `queued for ${employeeName(conversation.agent)} · type another and press Tab` : 'queued prompt sent · watching live agent output'
             : 'Enter sent', method === 'agent.queue' && !queuePending ? 'sending' : 'sent');
           setTimeout(() => { if (generation === this.generation) void this.refresh(a, pre); }, 100);
           return true;
@@ -881,6 +1095,7 @@ export class Dialog {
             queued.receipt.error = (e as Error).message; this.saveQueueHistory(); paintQueued(queued); this.repaintQueue?.();
           }
           setNote((e as Error).message, 'error');
+          audio.blip('error');
           return false;
         }
         finally {
@@ -893,11 +1108,14 @@ export class Dialog {
         const text = input.value.trim(); if (!text && !tray.length) return;
         const images = tray.take(); input.value = ''; draft.refresh();
         capture();
+        // Enter and Tab press their buttons too, so a send from the keyboard is seen as well as heard.
+        audio.blip(method === 'agent.queue' ? 'queue' : 'send');
+        replayAnimation(form.querySelector(method === 'agent.queue' ? '[data-queue]' : 'button[type="submit"]'), 'pressed');
         const queued = method === 'agent.queue' ? showQueued(text, images) : undefined;
         let receipt: OutboxReceipt | undefined;
         if (method === 'agent.prompt') {
           receipt = conversation.outbox.find(r => r.state === 'failed' && r.text === text && r.images.length === images.length && r.images.every((image, i) => image === images[i]));
-          if (!receipt) { receipt = { id: crypto.randomUUID(), text, images, state: 'sending' }; conversation.outbox.push(receipt); }
+          if (!receipt) { receipt = { id: crypto.randomUUID(), text, images, state: 'sending', seen: this.turnsSaying(text) }; conversation.outbox.push(receipt); }
           conversation.outbox = conversation.outbox.slice(-10); paintOutbox();
         }
         const run = () => send(method, method === 'agent.queue' && queued
@@ -938,6 +1156,7 @@ export class Dialog {
       stopTask?.addEventListener('click', async () => {
         if (stopTask.disabled) return;
         stopTask.disabled = true; stopTask.textContent = 'Stopping…';
+        audio.blip('press');
         setNote('Requesting stop…', 'sending');
         const latest = [...conversation.outbox].reverse().find(r => r.state === 'accepted' || r.state === 'working');
         try {
@@ -957,14 +1176,15 @@ export class Dialog {
           this.terminalCache.invalidate(a); void this.refresh(a, pre);
           stopTask.hidden = true;
         } catch (error) { if (generation === this.generation) setNote((error as Error).message, 'error'); }
-        finally { stopTask.disabled = false; stopTask.textContent = '■ Stop task'; }
+        finally { stopTask.disabled = false; stopTask.innerHTML = STOP_LABEL; }
       });
       form.querySelector('[data-queue]')?.addEventListener('click', () => submitMessage('agent.queue'));
       form.querySelector('[data-keys]')!.addEventListener('click', () => void send('agent.send_keys', { keys: ['Enter'] }));
-      setTimeout(() => {
-        const selection = document.getSelection();
-        if (generation === this.generation && !this.root.hidden && !this.readingHistory
-          && !(selection && !selection.isCollapsed && pre.contains(selection.anchorNode))) input.focus();
+      // A window rebuilt under someone typing gives the caret back at once, where it was; keys
+      // pressed in the meantime would otherwise go nowhere.
+      if (caret) { draft.focus(); input.setSelectionRange(caret[0], caret[1]); }
+      else setTimeout(() => {
+        if (generation === this.generation && !this.root.hidden && !this.readingHistory && !selectingIn(pre)) input.focus();
       }, 50);
     }
     await this.refresh(a, pre);
@@ -986,13 +1206,16 @@ export class Dialog {
       if (active) conversation.agent = active;
       else if (key !== (this.currentAgent && this.queueKey(this.currentAgent))) this.conversations.delete(key);
     }
+    for (const key of this.warmTurns.keys()) if (!agents.some(a => this.queueKey(a) === key)) this.warmTurns.delete(key);
     if (!this.openPane || this.root.hidden) return;
     const agent = agents.find((candidate) => candidate.pane_id === this.openPane);
     if (!agent) { this.close(); return; }
     if (this.currentAgent && this.terminalCache.key(agent) !== this.terminalCache.key(this.currentAgent)) {
-      void this.open(agent); return;
+      this.reopen(agent); return;
     }
     this.currentAgent = agent;
+    this.paintRecent();
+    this.paintHeader(agent);
     this.paintWorkspace(agent);
     this.paintModel(agent.model);
     this.refreshProgress(agent.pane_id);
@@ -1004,14 +1227,10 @@ export class Dialog {
     this.terminalCache.invalidate(agent);
     const pre = this.root.querySelector<HTMLPreElement>('.terminal-output');
     if (pre && !document.hidden) { void this.refresh(agent, pre); void this.refreshTranscript(agent, this.generation); }
-    if (agent.agent_status === 'working') {
-      const conversation = this.conversations.get(this.queueKey(agent));
-      for (const receipt of conversation?.outbox ?? []) if (receipt.state === 'accepted') {
-        receipt.state = 'working';
-        const badge = this.root.querySelector(`[data-message-id="${CSS.escape(receipt.id)}"] > div > span`);
-        if (badge) badge.textContent = 'working';
-      }
-    }
+    const conversation = this.conversations.get(this.queueKey(agent));
+    if (conversation && agent.agent_status !== 'working') this.settleReceipts(conversation);
+    else for (const receipt of conversation?.outbox ?? []) if (receipt.state === 'accepted') receipt.state = 'working';
+    this.repaintOutbox?.();
     if (!this.liveConversation) return;
     const form = this.root.querySelector<HTMLFormElement>('form.reply');
     const note = form?.querySelector<HTMLElement>('.reply-note');
@@ -1028,13 +1247,113 @@ export class Dialog {
     }
   }
 
+  /** The open agent changed identity under the window: its session id arrived or changed, or it
+   *  was given an employee record. The window has to be rebuilt, since the composer's queue button
+   *  depends on the session, but whoever is typing in it keeps their words, caret and place. */
+  private reopen(agent: AgentInfo) {
+    const previous = this.currentAgent!, from = this.queueKey(previous), to = this.queueKey(agent);
+    const input = this.root.querySelector<HTMLTextAreaElement>('form.reply textarea');
+    const caret: [number, number] | undefined = input && document.activeElement === input ? [input.selectionStart, input.selectionEnd] : undefined;
+    const screen = this.latestOutput;
+    this.saveConversation();
+    if (from !== to) {
+      // Conversations are kept by session, so a new id would strand the draft under the old one
+      // as a tab that goes nowhere. The record moves, never over one that is already there, and
+      // without its turns: another session has another transcript.
+      const record = this.conversations.get(from), existing = this.conversations.get(to), queued = this.queueHistory.get(from);
+      this.conversations.delete(from);
+      if (record && !existing) { record.turns = record.transcript = undefined; this.conversations.set(to, record); }
+      else if (record && existing && !existing.draft && !existing.images.length) { existing.draft = record.draft; existing.images = record.images; }
+      // Queued prompts follow the pane when its session id first arrives. A changed session is a
+      // different native queue, and receipts for the old one must not be reconciled against it.
+      if (queued && !previous.agent_session?.value && !this.queueHistory.has(to)) { this.queueHistory.delete(from); this.queueHistory.set(to, queued); this.saveQueueHistory(); }
+    }
+    // the pane's screen is still the pane's screen
+    if (screen) this.terminalCache.accept(agent, screen);
+    void this.open(agent, caret);
+  }
+
+  /** How many turns of the transcript carry these words as their prompt. */
+  private turnsSaying(text: string) { const said = words(text); return this.transcriptTurns.filter(turn => words(turn.prompt) === said).length; }
+  /** A delivered message belongs to the transcript. Until the transcript shows it, its receipt
+   *  stays under the conversation, so your own words never leave the screen between pressing Enter
+   *  and the agent writing them down. */
+  private filed(receipt: OutboxReceipt) {
+    if (receipt.state !== 'accepted' && receipt.state !== 'working') return false;
+    receipt.filed ||= receipt.images.length
+      ? this.transcriptTurns.some(turn => (!receipt.text.trim() || turn.prompt?.trim() === receipt.text.trim())
+        && receipt.images.every(image => image.path && turn.images?.some(saved => saved.path === image.path)))
+      : this.turnsSaying(receipt.text) > (receipt.seen ?? 0);
+    return receipt.filed;
+  }
+  /** Not everything sent becomes a turn: a slash command, an answer to a menu. If the agent has
+   *  not started on a delivered message after a few seconds, stop holding its receipt. While the
+   *  agent is busy with something else the message is still waiting its turn, and the status
+   *  change that ends that work asks again. Pictures wait for the transcript however long it takes. */
+  private holdReceipt(conversation: Conversation, receipt: OutboxReceipt) {
+    if (receipt.images.length || receipt.filed) return;
+    window.setTimeout(() => {
+      if (receipt.filed || receipt.state !== 'accepted' || conversation.agent.agent_status === 'working') return;
+      receipt.filed = true;
+      if (this.currentAgent && this.conversations.get(this.queueKey(this.currentAgent)) === conversation) this.repaintOutbox?.();
+    }, RECEIPT_HOLD_MS);
+  }
+
+  /** The agent is not working: a turn has ended, or the window opened on one that ended while it
+   *  was shut. Whatever that turn was going to put on the record is there by now, and a message
+   *  it never took up gets a last few seconds to be started on. */
+  private settleReceipts(conversation: Conversation) {
+    for (const receipt of conversation.outbox) {
+      if (receipt.state === 'working' && !receipt.images.length) receipt.filed = true;
+      else if (receipt.state === 'accepted') this.holdReceipt(conversation, receipt);
+    }
+  }
+
+  /** The recent-agents strip, patched in place: a tab is only touched when its name or draft
+   *  marker changes, so a click that is under way is never lost to a rebuild. */
+  private paintRecent() {
+    const strip = this.root.querySelector<HTMLElement>('.recent-conversations');
+    if (!strip || !this.currentAgent) return;
+    const current = this.queueKey(this.currentAgent);
+    const tabs = [...this.conversations.entries()].reverse().map(([key, c]) => ({ key, pane: c.agent.pane_id, label: `${employeeName(c.agent)}${c.draft || c.images.length ? ' · draft' : ''}` }));
+    const signature = JSON.stringify([current, tabs]);
+    if (signature === this.recentKey) return;
+    this.recentKey = signature;
+    const kept = new Map([...strip.querySelectorAll<HTMLButtonElement>('[data-conversation]')].map(button => [button.dataset.conversation!, button]));
+    const buttons = tabs.map(({ key, pane, label }) => {
+      let button = kept.get(key);
+      if (!button) {
+        button = document.createElement('button'); button.type = 'button'; button.dataset.conversation = key;
+        button.append(avatarCanvas(pane, 16), document.createElement('span'));
+      }
+      const text = button.querySelector('span')!;
+      if (text.textContent !== label) text.textContent = label;
+      button.setAttribute('aria-current', key === current ? 'page' : 'false');
+      return button;
+    });
+    if (buttons.length !== strip.children.length || buttons.some((button, index) => strip.children[index] !== button)) strip.replaceChildren(...buttons);
+  }
+
+  /** The header says what the agent is on now, not what it was on when the window opened. */
+  private paintHeader(agent: AgentInfo) {
+    const set = (selector: string, value: string) => { const el = this.root.querySelector(selector); if (el && el.textContent !== value) el.textContent = value; };
+    set('.title-name', employeeName(agent));
+    set('.conversation-task', taskOf(agent) || 'Ready for a prompt');
+    const facts = this.root.querySelector<HTMLElement>('.agent-facts'), html = factsOf(agent);
+    if (facts && html !== this.factsKey) { facts.innerHTML = html; this.factsKey = html; }
+  }
+
   refreshProgress(paneId: string) {
     if (this.openPane !== paneId || this.root.hidden) return;
     const progress = this.progressOf?.(paneId); if (!progress) return;
     const set = (selector: string, value: string) => { const el = this.root.querySelector(selector); if (el && el.textContent !== value) el.textContent = value; };
     this.root.querySelectorAll<HTMLElement>('.title-level,.level-card').forEach(el => { el.dataset.levelTier = tierForLevel(progress.level); });
-    const title = this.root.querySelector<HTMLElement>('.title-level'); if (title) title.title = `${progress.rank} · Level ${progress.level}`;
-    set('.title-level', `Lv ${progress.level}`);
+    const title = this.root.querySelector<HTMLElement>('.title-level');
+    if (title) {
+      title.title = `${progress.rank} · Level ${progress.level}`;
+      // a level gained while you are watching: the badge hops
+      if (title.textContent !== `Lv ${progress.level}`) { title.textContent = `Lv ${progress.level}`; replayAnimation(title, 'levelled'); }
+    }
     set('.level-number', `Lv ${progress.level}`);
     set('.rank', progress.rank);
     const bar = this.root.querySelector<HTMLElement>('.xp-track i');
@@ -1063,17 +1382,35 @@ export class Dialog {
 
   private paintStatus(status: AgentStatus) {
     this.currentStatus = status;
-    this.paintConversationFreshness();
+    const win = this.root.querySelector<HTMLElement>('.conversation-win');
+    if (win && win.dataset.status !== status) win.dataset.status = status;
     const stopTask = this.root.querySelector<HTMLButtonElement>('[data-stop-task]');
     if (stopTask) stopTask.hidden = status !== 'working';
+    const input = this.root.querySelector<HTMLTextAreaElement>('form.reply textarea');
+    const placeholder = status === 'blocked' ? 'answer them…' : 'send a prompt to this agent…';
+    if (input && input.placeholder !== placeholder) input.placeholder = placeholder;
     const wait = this.currentAgent?.wait_notice;
     const completed = status === 'idle' ? this.currentAgent?.completed_task : null;
     const completion = this.root.querySelector<HTMLElement>('.agent-completion');
-    if (completion) { completion.hidden = !completed || !!wait; completion.querySelector('span')!.textContent = completed ? `Task complete · ${completed.title} · Ready for another prompt` : ''; }
+    if (completion) {
+      const text = completed ? `Task complete · ${completed.title} · Ready for another prompt` : '', line = completion.querySelector('span')!;
+      completion.hidden = !completed || !!wait;
+      if (line.textContent !== text) { line.textContent = text; line.title = text; }
+      // A task finished while the window was open is the one thing here that lands, since the
+      // office's own card is held back behind a conversation. One already done at open just shows.
+      const shipped = completed?.entry_id;
+      if (shipped && this.lastShipped !== undefined && shipped !== this.lastShipped && !completion.hidden) playOnce(completion, 'fresh');
+      this.lastShipped = shipped ?? '';
+    }
     const label = wait ? wait.kind === 'rate_limit' ? 'Rate limited' : 'Waiting to retry' : completed ? 'done' : statusLabel(status);
-    this.root.querySelectorAll<HTMLElement>('.win-body .st').forEach(badge => { badge.className = `st ${wait ? 'retry-wait' : completed ? 'done' : status}`; badge.textContent = label; });
+    this.root.querySelectorAll<HTMLElement>('.win-body .st').forEach(badge => {
+      const name = `st ${wait ? 'retry-wait' : completed ? 'done' : status}`;
+      if (badge.className !== name) badge.className = name;
+      if (badge.textContent !== label) badge.textContent = label;
+    });
     const notice = this.root.querySelector<HTMLElement>('.agent-wait-notice');
-    if (notice) { notice.hidden = !wait; notice.textContent = wait ? `${label} · ${wait.detail}. Task is paused.` : ''; }
+    if (notice) { const text = wait ? `${label} · ${wait.detail}. Task is paused.` : ''; notice.hidden = !wait; if (notice.textContent !== text) notice.textContent = text; }
+    this.paintConversationFreshness();
   }
 
   /** Keep the open terminal view moving while the selected agent works on the prompt. */
@@ -1138,6 +1475,7 @@ export class Dialog {
       this.transcriptAvailable = result.available;
       if (first || !result.available) this.applyView();
       if (result.available) this.paintTranscript(result.turns);
+      else { const conversation = this.conversations.get(this.queueKey(a)); if (conversation) conversation.turns = undefined; }
       this.paintConversationFreshness();
     } catch {
       if (generation !== this.generation || request !== this.transcriptRequest) return;
@@ -1150,53 +1488,103 @@ export class Dialog {
       this.transcriptCheckFailed = true; this.paintConversationFreshness();
     } finally { if (this.transcriptInFlight === generation) this.transcriptInFlight = undefined; }
   }
+  /** The strip above the output is one slot of constant height on both faces, so the box under
+   *  it never moves: a wait notice, else a finished task, else a line saying which face this is.
+   *  Only what the slot says changes. */
   private paintConversationFreshness() {
     const banner = this.root.querySelector<HTMLElement>('.conversation-freshness');
     if (!banner) return;
-    banner.hidden = !!this.currentAgent?.wait_notice || this.view !== 'conversation' || this.transcriptAvailable === false;
+    banner.hidden = [...this.root.querySelectorAll<HTMLElement>('.agent-wait-notice,.agent-completion')].some(strip => !strip.hidden);
+    const conversation = this.view === 'conversation' && this.transcriptAvailable !== false;
     const active = this.currentStatus === 'working' || this.currentStatus === 'blocked';
-    const name = this.currentAgent ? displayName(agentKind(this.currentAgent)) : 'Agent';
-    const text = this.transcriptCheckFailed
-      ? 'Conversation update failed · showing saved messages. Retrying…'
-      : this.transcriptAvailable === undefined ? 'Loading saved conversation…'
-      : active ? `${name} is ${this.currentStatus === 'blocked' ? 'waiting for input' : 'working'} · messages appear here when saved. Screen shows live activity.`
+    const name = this.currentAgent ? employeeName(this.currentAgent) : 'Agent';
+    const greeting = this.greeting && this.greeting.pane === this.openPane ? this.greeting.text : '';
+    const text = greeting ? greeting
+      : !conversation ? this.transcriptAvailable === false ? 'Live screen · this agent keeps no transcript on this machine' : 'Live screen · the pane as it is right now'
+      : this.transcriptCheckFailed ? 'Conversation update failed · showing saved messages. Retrying…'
+      : this.transcriptAvailable === undefined ? this.transcriptTurns.length ? 'Saved conversation · checking for updates…' : 'Loading saved conversation…'
+      : active ? `${name} is ${this.currentStatus === 'blocked' ? 'waiting for input' : 'working'} · messages appear here when saved`
       : 'Saved conversation · checks for updates automatically';
-    const label = banner.querySelector('span')!;
-    if (label.textContent !== text) label.textContent = text;
+    const label = banner.querySelector('span')!, other = banner.querySelector<HTMLButtonElement>('button')!;
+    if (label.textContent !== text) { label.textContent = text; label.title = text; }
+    banner.classList.toggle('greeting', !!greeting);
+    const action = conversation ? 'View live screen' : 'Back to conversation';
+    if (other.textContent !== action) other.textContent = action;
+    // no transcript, or none that could be read yet (the demo office has none): no other face to offer
+    other.hidden = !conversation && (this.transcriptAvailable === false || (this.transcriptAvailable === undefined && this.transcriptCheckFailed));
   }
+  /** Turns are reconciled one at a time, the way the screen is reconciled line by line: a turn
+   *  whose prompt is unchanged keeps its node and its pictures, and only a reply that changed is
+   *  rendered again. A selection in an older turn survives the next message. */
   private paintTranscript(turns: Turn[]) {
     const box = this.root.querySelector<HTMLElement>('.transcript-output');
     if (!box) return;
     const working = this.currentStatus === 'working' || this.currentStatus === 'blocked';
     const key = JSON.stringify([turns, working]);
-    if (box.dataset.key === key) return;
-    this.transcriptTurns = turns;
-    const selection = box.ownerDocument.getSelection();
-    const selected = selection && !selection.isCollapsed && box.contains(selection.anchorNode);
-    const follow = !selected && (!box.dataset.loaded || box.scrollHeight - box.clientHeight - box.scrollTop < 40);
+    if (box.dataset.loaded && key === this.transcriptKey) return;
+    this.transcriptKey = key; this.transcriptTurns = turns;
+    const conversation = this.currentAgent && this.conversations.get(this.queueKey(this.currentAgent));
+    if (conversation) conversation.turns = turns;
+    const follow = !selectingIn(box) && (!box.dataset.loaded || !!this.transcriptFollow?.pinned);
     const scroll = box.scrollTop;
-    const when = (at?: number) => at ? `<time datetime="${new Date(at).toISOString()}">${new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>` : '';
-    const last = turns[turns.length - 1];
-    box.innerHTML = turns.map(t => `<article class="turn">${t.prompt || t.images?.length ? `<div class="turn-prompt"><span><b>You</b>${when(t.at)}</span>${t.prompt ? `<p>${esc(t.prompt)}</p>` : ''}<div class="turn-images"></div></div>` : ''}${t.reply ? `<div class="turn-reply">${renderMarkdown(t.reply)}</div>` : t === last && working ? '<div class="turn-reply turn-pending">Working on it…</div>' : ''}</article>`).join('')
-      || '<p class="turn-empty">No conversation recorded yet.</p>';
-    box.querySelectorAll<HTMLElement>('.turn').forEach((row, index) => {
-      const host = row.querySelector<HTMLElement>('.turn-images');
-      if (host) renderPromptImages(host, (turns[index].images ?? []).map(image => ({ name: image.name,
-        url: image.url?.startsWith('/api/image?') ? image.url : undefined, status: 'Attached' })));
+    const kept = new Map<string, HTMLElement[]>();
+    for (const row of box.querySelectorAll<HTMLElement>(':scope > .turn')) {
+      const asked = this.turnParts.get(row)!.asked; kept.set(asked, [...(kept.get(asked) ?? []), row]);
+    }
+    const rows = turns.map((turn, index) => {
+      // A turn is its prompt. Its time is not part of that: each message of the reply moves it.
+      const asked = JSON.stringify([turn.prompt ?? '', turn.images ?? []]);
+      const said = turn.reply || (index === turns.length - 1 && working ? PENDING : '');
+      let row = kept.get(asked)?.shift();
+      const before = row && this.turnParts.get(row)!.said;
+      if (!row) {
+        row = document.createElement('article'); row.className = 'turn';
+        // a turn that arrives while you are reading steps into place; the first paint just appears
+        if (box.dataset.loaded && box.clientHeight) playOnce(row, 'turn-new');
+        if (turn.prompt || turn.images?.length) {
+          const prompt = document.createElement('div'); prompt.className = 'turn-prompt';
+          prompt.innerHTML = `<span><b>You</b><time></time></span>${turn.prompt ? `<p>${esc(turn.prompt)}</p>` : ''}<div class="turn-images"></div>`;
+          renderPromptImages(prompt.querySelector<HTMLElement>('.turn-images')!, (turn.images ?? []).map(image => ({ name: image.name,
+            url: image.url?.startsWith('/api/image?') ? image.url : undefined, status: 'Attached' })));
+          row.append(prompt);
+        }
+      }
+      const time = row.querySelector<HTMLTimeElement>('.turn-prompt time');
+      const clock = turn.at ? new Date(turn.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+      if (time && time.textContent !== clock) { time.textContent = clock; time.dateTime = turn.at ? new Date(turn.at).toISOString() : ''; }
+      if (said !== before) {
+        row.querySelector(':scope > .turn-reply')?.remove();
+        if (said) {
+          const reply = document.createElement('div'); reply.className = said === PENDING ? 'turn-reply turn-pending' : 'turn-reply';
+          reply.innerHTML = said === PENDING ? 'Working on it<i></i><i></i><i></i>' : renderMarkdown(said);
+          row.append(reply);
+        }
+      }
+      this.turnParts.set(row, { asked, said });
+      return row;
     });
+    // As in the terminal: take out what is gone, then put the rest in order without moving a row
+    // that is already in its place.
+    const wanted = new Set<Element>(rows);
+    for (const child of [...box.children]) if (!wanted.has(child)) child.remove();
+    let cursor = box.firstElementChild;
+    for (const row of rows) { if (row === cursor) cursor = cursor.nextElementSibling; else box.insertBefore(row, cursor); }
+    if (!rows.length) {
+      const empty = document.createElement('p'); empty.className = 'turn-empty';
+      empty.textContent = `Nothing on the record yet. Messages appear here once ${this.currentAgent ? employeeName(this.currentAgent) : 'the agent'} saves them.`;
+      box.append(empty);
+    }
     this.repaintOutbox?.();
-    box.dataset.key = key; box.dataset.loaded = 'true';
-    box.scrollTop = follow ? box.scrollHeight : scroll;
+    box.dataset.loaded = 'true';
+    if (follow) this.transcriptFollow?.pin(); else box.scrollTop = scroll;
   }
   private paintOutputNow(pre: HTMLPreElement, result: TerminalSnapshot) {
     if (this.rawOutput.get(pre) === result.text) { this.clearOutputStatus(); return; }
     this.rawOutput.set(pre, result.text);
     const text = tidyTerminal(result.text) || '(no output)';
-    const selection = pre.ownerDocument.getSelection();
-    const selected = selection && !selection.isCollapsed && pre.contains(selection.anchorNode);
-    const follow = !selected && (!pre.dataset.loaded || pre.scrollHeight - pre.clientHeight - pre.scrollTop < 40);
+    const follow = !selectingIn(pre) && (!pre.dataset.loaded || !!this.outputFollow?.pinned);
     const scroll = pre.scrollTop;
-    if (renderTerminal(pre, text)) pre.scrollTop = follow ? pre.scrollHeight : scroll;
+    if (renderTerminal(pre, text)) { if (follow) this.outputFollow?.pin(); else pre.scrollTop = scroll; }
     pre.dataset.loaded = 'true';
     this.clearOutputStatus();
   }
@@ -1237,6 +1625,16 @@ export class Dialog {
       status.title = (error as Error).message;
     }
   }
+}
+
+/** The plain facts in the details sheet. They are rewritten as the agent moves on; the status
+ *  badge among them is repainted by paintStatus, which knows about waits and completions. */
+function factsOf(a: AgentInfo) {
+  const task = taskOf(a), asked = a.last_prompt?.split('\n')[0].trim();
+  return `<dt>status</dt><dd><span class="st ${a.agent_status}">${statusLabel(a.agent_status)}</span></dd>
+    <dt>task</dt><dd>${esc(task) || '—'}</dd>${asked && asked !== task ? `<dt>asked</dt><dd class="asked">${esc(asked)}</dd>` : ''}${a.activity && a.agent_status === 'working' ? `<dt>now</dt><dd>${esc(a.activity)}</dd>` : ''}
+    <dt>pane</dt><dd>${esc(a.pane_id)}</dd>
+    <dt>cwd</dt><dd>${esc(a.foreground_cwd || a.cwd || '—')}</dd>`;
 }
 
 function esc(s: string) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!)); }

@@ -45,7 +45,9 @@ body:has(#sweep-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .sweep-actions { display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 14px; border-top:1px solid #b9c6d0; background:#eaf0f4; }
 .sweep-actions > span,.sweep-actions > button:first-child:not(:last-child) { margin-right:auto; }
 .sweep-complete { padding:28px 8px 14px; text-align:center; }
-.sweep-complete i { display:inline-flex; padding:10px; background:#e5f0e4; color:#4a7653; border:2px solid #8aac8c; margin-bottom:12px; }
+.sweep-complete .sweep-gus { margin:0 auto 10px; }
+.sweep-complete .sweep-gus:empty { display:none; }
+.sweep-signoff { margin:0 0 10px; }
 .sweep-kept { padding:10px 12px; background:#faf5e7; border:1px solid #d2bf91; }
 @media (max-width:640px) {
   #sweep-panel { padding:8px; }
@@ -70,3 +72,4 @@ body:has(#sweep-panel:not([hidden])) #studio-dock { visibility:hidden; }
   .sweep-intro-gus { gap:10px; align-items:flex-start; }
   .sweep-gus, .sweep-gus canvas { width:96px; height:72px; }
 }
+@media (max-width:820px) { .sweep-age small { font-size:10px; } }

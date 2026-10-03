@@ -1,0 +1,51 @@
+/* The party card's motion, and the lines it gained: the level banner, the pips toward the next
+   level, and the tasks that joined a card already up. The frame, the confetti and the figures are
+   in style.css; a rule here that replaces one there carries one more class, so the order the two
+   sheets load in does not matter. */
+
+/* The figure, the coin and the trophy bob on two frames like the sprites they are, and the
+   confetti falls two pixels at a time. */
+#party .party-win :is(.party-fig, .party-trophy, .payday-coin) { animation:party-bob .5s step-end infinite; }
+#party .party-win .payday-coin { animation-delay:.12s; }
+#party .party-win .party-trophy { animation-delay:.25s; }
+#party .party-win .party-sky { animation-timing-function:steps(34); }
+@keyframes party-bob { 50% { transform:translateY(-4px); } }
+
+/* The card lands with its headline on it, then says the rest line by line and sets the trophy
+   down last: a result screen rather than a notice. Not in a replay, where a paused card has to be
+   readable wherever its clock stopped. */
+body:not(.replay-mode) #party :is(.party-task, .party-summary, .party-meta, .party-also-row) { animation:party-line var(--pop-ms) steps(2,end) .08s both; }
+body:not(.replay-mode) #party .party-summary { animation-delay:.15s; }
+body:not(.replay-mode) #party .party-meta { animation-delay:.22s; }
+body:not(.replay-mode) #party .party-also-row { animation-delay:0s; }
+body:not(.replay-mode) #party .party-win .party-trophy { animation:party-land var(--pop-ms) var(--pop-ease) .34s both, party-bob .5s step-end .6s infinite; }
+@keyframes party-line { from { transform:translateX(-6px); opacity:0; } }
+@keyframes party-land { from { transform:scale(0); } }
+
+/* A level-up: the game's own banner over the headline, and a gold frame. */
+#party .party-win.levelup { border-color:#b8791f; }
+#party .party-banner { display:flex; align-items:center; gap:10px; margin-bottom:4px; font-size:13px; color:#7a4a12; }
+#party .party-levelup { flex:none; width:106px; height:24px; background:url(/assets/gds/ui/main00.png) -28px -322px / 512px 512px; image-rendering:pixelated; }
+body:not(.replay-mode) #party .party-levelup { animation:party-land var(--pop-ms) var(--pop-ease) .3s both; }
+
+/* Three shipped tasks make a level. The pip this task earned blinks on; the third one flashes the
+   whole bar and empties it for the next level. */
+#party .party-xp { margin-left:5px; }
+#party .party-xp i { display:inline-block; width:7px; height:7px; margin-right:2px; border:1px solid #253642; background:#344654; }
+#party .party-xp i.on { background:#31a7e8; }
+body:not(.replay-mode) #party .party-xp i.new { animation:party-pip .3s step-end .34s both; }
+body:not(.replay-mode) #party .party-xp.full i { animation:party-full .9s step-end .34s both; }
+@keyframes party-pip { 0% { background:#344654; } 50% { background:#fff; } }
+@keyframes party-full { 0%, 50% { background:#31a7e8; } 25%, 75% { background:#fff; } }
+
+/* Tasks that landed while the card was up, or while it was waiting for the screen. */
+#party .party-also { margin-top:5px; padding-top:5px; border-top:1px dashed #aab7c1; font-size:12px; color:#2f4654; }
+#party .party-streak { display:inline-block; padding:1px 6px; border:1px solid #b89b57; background:#f8ebc8; color:#634a2b; font-size:11px; letter-spacing:1px; text-transform:uppercase; }
+#party .party-streak.bump { animation:party-bump var(--pop-ms) var(--pop-ease); }
+#party :is(.party-also-row, .party-also-more) { margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#party .party-also-more { color:var(--muted); }
+@keyframes party-bump { from { transform:scale(.6); } }
+
+@media (prefers-reduced-motion:reduce) {
+  #party .party-win * { animation:none !important; }
+}

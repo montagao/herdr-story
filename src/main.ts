@@ -7,7 +7,7 @@ import { projectKey } from '../shared/studio';
 import { BridgeClient } from './net/client';
 import type { OfficeClient } from './net/office-client';
 import { OfficeModel } from './model/office';
-import { Feed } from './feed/feed';
+import { Feed, handleOf, type RosterMenuItem } from './feed/feed';
 import { Dialog } from './dialog';
 import { seedFrom, type Prop } from './decor';
 import { audio } from './audio';
@@ -19,15 +19,23 @@ import { Celebrate } from './celebrate';
 import { installEventDebugger } from './debug-events';
 import { Studio } from './studio';
 import { setOfficeLooks } from './sprites';
-import { Loading } from './loading';
+import { Loading, bootFailed, bootSucceeded } from './loading';
 import { settings, SettingsDialog, gearIcon } from './settings';
 import { BossCutscene } from './boss-cutscene';
 import { Reception } from './reception';
 import { OfficeCat } from './office-cat';
 import { Cutscenes, actorOf, salesReport, awardsNight, launchDay, crunchTime, trainingSeminar, conventionDay, type Actor, type RankRow } from './cutscenes';
 import { projectOf } from './model/office';
-import { projectName, employeeName, type StudioState } from '../shared/studio';
+import { projectName, employeeName, type StudioState, type JournalEntry } from '../shared/studio';
 import { taskOf } from '../shared/types';
+import { describeMoney } from './money-words';
+import { SalesTicker } from './ticker';
+import { gameCurrency } from './currency';
+import type { PaymentDetails } from '../shared/payment-details';
+import { installWindowMotion } from './motion';
+import { setFavicon } from './favicon';
+import { anchorOfficeNotification } from './office-notification';
+import { rankForLevel } from './model/office';
 
 let feed: Feed;
 const loading = new Loading();
@@ -35,17 +43,30 @@ async function boot() {
   // Conversations connect before the canvas engine, optional artwork, and remote font finish.
   void document.fonts.load('16px "DotGothic16"').catch(() => {});
   const q = new URLSearchParams(location.search);
+  if (q.get('replay') === '1') { await (await import('./replay')).openReplay(loading); return; }
   const priorVisit = Reception.previousVisit();
   // Demo mode is this same office on a captured snapshot, with no bridge behind it.
   const demo = q.get('demo') === '1' ? await (await import('./demo')).loadDemo() : undefined;
   const lab = q.has('lab');
   const people = q.get('lab') === 'people';
+  // Every window lands, dims the room and clicks the same way, from the one place that sees them all.
+  installWindowMotion({
+    opened: (_root, full) => { if (full) audio.play('open'); else audio.blip('tick'); },
+    closed: (full) => { if (full) audio.play('close'); else audio.blip('back'); },
+  });
   if (lab) loading.finish(0);   // the sprite labs are tools, not the office
   loading.step('art', 'Loading the office art');
+  // The title card lifts when both halves are true: the room can draw, and the first agents are
+  // seated. Either can come first — the bridge usually answers before Phaser is up — and lifting
+  // on one alone showed an empty canvas, or agents at desks that did not exist yet.
+  let seated: number | undefined, roomUp = false;
+  const reveal = () => { if (seated !== undefined && roomUp) loading.finish(seated); };
   if (lab) document.body.classList.add('lab');   // debug pages get the whole window
   const model = new OfficeModel();
   const client: OfficeClient = demo?.client ?? new BridgeClient(BridgeClient.defaultUrl());
   feed = new Feed();
+  // The roster cannot load the sound module itself (a test loads it without a browser).
+  feed.blip = (name) => audio.blip(name);
   const dialog = new Dialog(client);
   if (demo) dialog.readOnlyNote = 'this office is a snapshot · replies go nowhere in the demo';
   let workspaces: WorkspaceSummary[] = [];
@@ -95,11 +116,15 @@ async function boot() {
   const officeInputBlocked = () => [...document.querySelectorAll<HTMLElement>('[data-block-office-input]')]
     .some((node) => !node.hasAttribute('hidden'));
   office.canInteract = () => !officeInputBlocked();
+  // the glance at the front desk stays for as long as the payday card it belongs to
+  office.holdPeek = () => party.isOpen;
   party.busy = () => !document.getElementById('dialog')!.hidden || bossCutscene.isOpen || !!studio?.isOpen || !!studio?.sweepOpen || !!reception?.isOpen || office.furnishings.editing;
   const hud = new Hud(demo ? { loadRevenue: demo.revenue, persistRange: false } : {});
 
   // ---- the event scenes: what the office cuts away to, and what earns each one ----
   const scenes = new Cutscenes(() => office.textures);
+  // a card or scene sent away by hand takes its fanfare with it
+  party.onDismiss = scenes.onDismiss = () => audio.hushTune();
   if (studio) cat = new OfficeCat(client, {
     state: () => model.studio,
     beforeOpen: () => { dialog.close(); studio.close(); reception?.close(false); bossCutscene.close(); scenes.close(); payments.close(); },
@@ -135,7 +160,7 @@ async function boot() {
   const colorOf = (id: string) => model.studio?.projects.find((p) => p.id === id)?.color ?? '#307c9b';
   const journalSince = (days: number) => (model.studio?.journal ?? []).filter((e) => e.at > Date.now() - days * 864e5);
   // Weekly report: the ranking board for the last seven days, then employee of the week.
-  const weeklyReport = (label: string) => {
+  const weeklyReport = (label: string, onShown?: () => void) => {
     const entries = journalSince(7);
     const sales = new Map<string, number>(), tasks = new Map<string, number>(), byEmployee = new Map<string, number>();
     for (const e of entries) {
@@ -145,22 +170,28 @@ async function boot() {
     const rows: RankRow[] = sales.size
       ? [...sales].sort((a, b) => b[1] - a[1]).map(([id, n]) => ({ name: projectName(id), value: money(n), color: colorOf(id) }))
       : [...tasks].sort((a, b) => b[1] - a[1]).map(([id, n]) => ({ name: projectName(id), value: `${n} shipped`, color: colorOf(id) }));
-    scenes.play(salesReport(label, rows, sales.size ? 'sales' : 'shipments'));
+    const report = salesReport(label, rows, sales.size ? 'sales' : 'shipments');
+    scenes.play({ ...report, onShown });
     const [best] = [...byEmployee].sort((a, b) => b[1] - a[1]);
     const winner = best && actorForEmployee(best[0]);
-    if (winner) scenes.play(awardsNight(winner, 'Employee of the week', `${best[1]} task${best[1] === 1 ? '' : 's'} shipped · ${label}`));
+    // the awards follow the board they were read out from, without the usual gap between scenes
+    if (winner) scenes.play({ ...awardsNight(winner, 'Employee of the week', `${best[1]} task${best[1] === 1 ? '' : 's'} shipped · ${label}`), after: report.id });
   };
+  // The week is marked as reported when its report is actually seen: the report waits for an
+  // audience now, and a reload while it waited used to lose it for good.
   const WEEK_KEY = 'herdr-story:reported-week';
-  hud.onWeek = (label, previous) => { weeklyReport(previous); try { localStorage.setItem(WEEK_KEY, label); } catch { /* private mode */ } };
+  const markWeek = (label: string) => { try { localStorage.setItem(WEEK_KEY, label); } catch { /* private mode */ } };
+  hud.onWeek = (label, previous) => weeklyReport(previous, () => markWeek(label));
   let weekChecked = false;
   // The first open in a new week gets last week's report, a little after the room settles.
   const checkWeek = () => {
     if (weekChecked || !hud.week) return;
     weekChecked = true;
+    const week = hud.week;
     try {
       const seen = localStorage.getItem(WEEK_KEY);
-      if (seen && seen !== hud.week) window.setTimeout(() => weeklyReport(seen), 5000);
-      localStorage.setItem(WEEK_KEY, hud.week);
+      if (seen && seen !== week) window.setTimeout(() => weeklyReport(seen, () => markWeek(week)), 5000);
+      else markWeek(week);
     } catch { /* private mode */ }
   };
   // Journal news: a trophy is an awards night, a release is launch day.
@@ -176,11 +207,12 @@ async function boot() {
         const winner = e.contributors.map(actorForEmployee).find(Boolean) ?? crewActor(e.project);
         if (winner) scenes.play(awardsNight(winner, clipTo(e.title, 40), `Trophy for ${projectName(e.project)}`));
       }
-      if (e.kind === 'release') scenes.play(launchDay(`${projectName(e.project)} is out`, clipTo(e.title, 80), e.notes ? clipTo(plain(e.notes), 120) : undefined));
+      if (e.kind === 'release') scenes.play({ ...launchDay(`${projectName(e.project)} is out`, clipTo(e.title, 80), e.notes ? clipTo(plain(e.notes), 120) : undefined), hold: true });
     }
   };
   // Best day at the till, judged against the best day before it.
   const DAY_KEY = 'herdr-story:daily-sales';
+  let bestDayAt = 0;
   const noteSale = (ev: MoneyEvent) => {
     if ((ev.kind !== 'sale' && ev.kind !== 'subscribed') || !(ev.amount > 0)) return;
     const day = new Date().toDateString();
@@ -190,7 +222,8 @@ async function boot() {
     s.total += ev.amount;
     if (s.best > 0 && s.total > s.best && s.celebrated !== day) {
       s.celebrated = day;
-      scenes.play(launchDay('Best day yet', `${money(s.total)} today, past the old record of ${money(s.best)}`));
+      bestDayAt = Date.now();
+      scenes.play({ ...launchDay('Best day yet', `${money(s.total)} today, past the old record of ${money(s.best)}`), hold: true });
     }
     try { localStorage.setItem(DAY_KEY, JSON.stringify(s)); } catch { /* private mode */ }
   };
@@ -217,15 +250,59 @@ async function boot() {
     { caption: 'Boom', run: () => office.previewBoom() },
   ];
 
+  // Who paid: the bridge keeps a record per provider event; look it up while the customer walks in.
+  const describe = (event: MoneyEvent) => async () => {
+    if (!/^(evt_|revenuecat:)/.test(event.id)) return describeMoney(event);
+    try { return describeMoney(event, await client.call('payment.detail', { id: event.id }, { timeoutMs: 4000 }) as PaymentDetails); }
+    catch { return describeMoney(event); }
+  };
+  const ticker = lab ? undefined : new SalesTicker(document.getElementById('game')!);
+  // The day's money comes from the journal, not the twelve-event tail; refreshed every quarter
+  // hour and whenever the calendar turns over.
+  let tickerDay = '';
+  const seedTicker = () => {
+    if (!ticker) return;
+    const start = new Date(); start.setHours(0, 0, 0, 0); tickerDay = start.toDateString();
+    void client.call('studio.journal', { since: start.getTime(), kind: 'sale', limit: 200 }, { timeoutMs: 10000 })
+      .then(page => ticker.seedFromJournal((page as { entries: JournalEntry[] }).entries ?? [])).catch(() => {});
+  };
+  window.setInterval(() => { if (new Date().toDateString() !== tickerDay || Date.now() % 900_000 < 60_000) seedTicker(); }, 60_000);
+  void gameCurrency.loadRates(() => client.call('money.rates', {}, { timeoutMs: 8000 }) as Promise<{ date?: string; rates: Record<string, number> }>);
+  // A hot hour: three sales inside sixty minutes cut to the queue outside the shop.
+  const saleTimes: { at: number; amount: number }[] = [];
+  let hotHourUntil = 0;
+  const noteStreak = (event: MoneyEvent) => {
+    if (event.kind !== 'sale' && event.kind !== 'subscribed') return;
+    const now = Date.now();
+    saleTimes.push({ at: now, amount: Math.max(0, event.amount) });
+    while (saleTimes.length && now - saleTimes[0].at > 3600e3) saleTimes.shift();
+    if (saleTimes.length >= 3 && now > hotHourUntil) {
+      hotHourUntil = now + 3600e3;
+      // the same shop front twice in a row for one sale is once too many
+      if (now - bestDayAt < 60_000) return;
+      scenes.play(launchDay('Hot hour', `${saleTimes.length} sales in the last hour · ${money(saleTimes.reduce((n, s) => n + s.amount, 0))}`));
+    }
+  };
   const reactToMoney = (event: MoneyEvent) => {
-    noteSale(event);
+    // Only payments the bar will add up itself are announced to it: an expected id keeps the next
+    // revenue read quiet, so expecting anything else would swallow an unrelated gain.
+    const credited = event.source !== 'revenuecat' && (event.kind === 'sale' || event.kind === 'refund');
+    if (credited) hud.expect(event.id);
+    const paid = event.kind === 'sale' || event.kind === 'subscribed';
+    const described = paid ? describe(event)() : undefined;
+    ticker?.add(event, described);
     if (event.kind === 'trial_started') void office.visit('fan', 'Just trying it out!');
-    else if (event.kind === 'subscribed' || event.kind === 'subscription_started') void office.visit('mascot', 'A new subscriber!');
-    office.money(event);
-    party.money(event);          // money arriving gets the same window a shipped game gets
-    // Failed and disputed payments include an attempted amount, but no funds arrived.
-    if (event.source === 'revenuecat') hud.refreshAfterPayment();
-    else if (event.kind === 'sale' || event.kind === 'refund') hud.credit(event.amount);
+    else if (event.kind === 'subscription_started') void office.visit('mascot', 'A new subscriber!');
+    // The till rings when the customer reaches the counter: party, HUD and sound land together.
+    office.money(event, { describe: described ? () => described : undefined, onPaid: (line) => {
+      party.money(event, line);          // money arriving gets the same window a shipped game gets
+      // A record day is announced after the till has rung, not over the customer walking in.
+      noteSale(event);
+      // Failed and disputed payments include an attempted amount, but no funds arrived.
+      if (event.source === 'revenuecat') { hud.ring(); hud.refreshAfterPayment(); }
+      else if (credited) hud.credit(event.amount, event.id);
+      noteStreak(event);
+    } });
   };
   const billingSetup = new BillingSetup();
   hud.onConnect = () => void billingSetup.open();
@@ -237,9 +314,26 @@ async function boot() {
     return { total: all.length, working: all.filter((a) => a.agent_status === 'working').length }; };
   // Arrows pan the office, but not while the agent sheet is up — it scrolls its own output.
   office.canPan = () => office.canInteract();
-  const hint = !lab ? document.createElement('div') : null;
-  if (hint) { hint.id = 'agent-hint'; hint.textContent = 'click an agent to talk'; document.getElementById('game')?.append(hint); }
-  const openAgent = (a: AgentInfo) => { if (!office.canInteract()) return; hint?.remove(); if (a.office_role === 'boss') void bossCutscene.open(false); else void dialog.open(a); };
+  // The first words once the shutter is up. Until someone has opened a conversation in this
+  // browser it is the one thing worth knowing; after that it is a greeting, and it leaves by itself.
+  const HINTED_KEY = 'herdr-story:hinted';
+  const hinted = () => { try { return localStorage.getItem(HINTED_KEY) === '1'; } catch { return true; } };
+  let hint: HTMLElement | null = null;
+  loading.onGone = () => {
+    if (lab || hint) return;
+    const chip = hint = document.createElement('div');
+    chip.id = 'agent-hint';
+    if (hinted()) {
+      const all = [...model.agents.values()], waiting = all.filter((a) => a.agent_status === 'blocked').length;
+      const hour = new Date().getHours();
+      const hello = hour >= 5 && hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : hour < 23 ? 'Good evening' : 'Working late';
+      chip.textContent = [hello, all.length ? `${all.length} at ${all.length === 1 ? 'their desk' : 'their desks'}` : 'nobody in yet',
+        ...(waiting ? [`${waiting} ${waiting === 1 ? 'needs' : 'need'} you`] : [])].join(' · ');
+      window.setTimeout(() => { chip.remove(); if (hint === chip) hint = null; }, 6000);
+    } else chip.textContent = 'click an agent to talk';
+    document.getElementById('game')?.append(chip);
+  };
+  const openAgent = (a: AgentInfo) => { if (!office.canInteract()) return; hint?.remove(); try { localStorage.setItem(HINTED_KEY, '1'); } catch { /* private mode */ } if (a.office_role === 'boss') void bossCutscene.open(false); else void dialog.open(a); };
   if (studio) {
     studio.beforeOpen = () => { dialog.close(); scenes.close(); reception?.close(false); cat?.close(false); hint?.remove(); };
     studio.onTalk = openAgent;
@@ -247,6 +341,25 @@ async function boot() {
     dialog.onProfile = a => studio.open('people', a.employee_id);
   }
   feed.onSelect = (paneId) => { if (!office.canInteract()) return; const a = model.agents.get(paneId); if (a) { office.focus(paneId); openAgent(a); } };
+  feed.menuFor = (paneId) => {
+    const a = model.agents.get(paneId); if (!a) return [];
+    const employee = studio && a.employee_id ? model.studio?.employees.find(e => e.id === a.employee_id) : undefined;
+    const canEdit = !!employee && dialog.writable;
+    const items: RosterMenuItem[] = [];
+    if (employee) items.push({ label: employee.favorite ? 'Unpin from the top' : 'Pin to the top', disabled: !canEdit, run: () => void studio!.pinEmployee(employee.id, !employee.favorite) });
+    if (employee) items.push({ label: 'Rename…', disabled: !canEdit, edit: { value: employee.name, submit: name => void studio!.renameEmployee(employee.id, name) } });
+    items.push({ label: 'Open conversation', run: () => { office.focus(paneId); openAgent(a); } });
+    items.push({ label: 'Show on the floor', run: () => { if (office.canInteract()) office.focus(paneId); } });
+    if (employee) items.push({ label: 'Employee profile', run: () => studio!.open('people', employee.id) });
+    items.push({ label: `Copy ${handleOf(agentKind(a), a.pane_id)}`, run: async () => { try { await navigator.clipboard.writeText(handleOf(agentKind(a), a.pane_id)); studio?.toast('Handle copied.', undefined, 'ok'); } catch { studio?.toast('Could not copy.', undefined, 'error'); } } });
+    if (a.agent_status === 'working' && dialog.writable) items.push({ label: 'Stop this task', danger: true, run: async () => {
+      try { await client.call('agent.interrupt', { target: paneId }); studio?.toast(`Asked ${employeeName(a)} to stop.`); }
+      catch (error) { studio?.toast((error as Error).message, undefined, 'error'); }
+    } });
+    return items;
+  };
+  // a hire from the recruitment desk points the camera at the new desk, as a free agent's does
+  dialog.onHired = agent => office.focus(agent.pane_id);
   office.onPreview = agent => { if (office.canInteract()) dialog.prefetch(agent); };
   feed.onPreview = paneId => { const agent = model.agents.get(paneId); if (agent) office.onPreview?.(agent); };
   feed.onProjectSelect = project => { if (office.canInteract()) office.focusProject(project); };
@@ -261,21 +374,21 @@ async function boot() {
   };
   office.furnishings.onFreeAgent = async () => {
     if (freeAgentBusy || !office.canInteract()) return;
-    if (!dialog.writable) { studio?.toast('Starting agents is unavailable on a read-only bridge.'); return; }
+    if (!dialog.writable) { studio?.toast('Starting agents is unavailable on a read-only bridge.', undefined, 'error'); return; }
     freeAgentBusy = true;
-    const launch = dialog.showLaunch('Creating a free agent in the projects directory…');
+    const launch = dialog.showLaunch('Creating a free agent in the projects directory…', undefined, false, 1);
     let started = false;
     try {
       const result = await client.call('agent.free', {}, { onProgress: stage => {
-        dialog.showLaunch(stage === 'creating' ? 'Creating workspace…' : stage === 'starting' ? 'Starting agent…' : 'Opening conversation…', launch);
+        dialog.showLaunch(stage === 'creating' ? 'Creating workspace…' : stage === 'starting' ? 'Starting agent…' : 'Opening conversation…', launch, false, stage === 'creating' ? 1 : stage === 'starting' ? 2 : 3);
       } }) as { pane_id: string; agent?: AgentInfo };
       started = true;
       const agent = result.agent ?? (await client.call('agent.list') as { agents: AgentInfo[] }).agents.find(a => a.pane_id === result.pane_id);
-      studio?.toast('Free agent ready in the projects directory.');
-      if (agent && dialog.launchActive(launch)) { office.focus(result.pane_id); void dialog.open(agent); }
+      studio?.toast('Free agent ready in the projects directory.', undefined, 'ok');
+      if (agent && dialog.launchActive(launch)) { office.focus(result.pane_id); dialog.welcome(agent); void dialog.open(agent); }
     } catch (error) {
       dialog.showLaunch(started ? 'Free agent started. Select its desk to open the conversation.' : `Could not start a free agent: ${(error as Error).message}`, launch, true);
-      studio?.toast(started ? 'Free agent started. Select its desk to open the conversation.' : `Could not start a free agent: ${(error as Error).message}`);
+      studio?.toast(started ? 'Free agent started. Select its desk to open the conversation.' : `Could not start a free agent: ${(error as Error).message}`, undefined, started ? 'note' : 'error');
     } finally { freeAgentBusy = false; }
   };
 
@@ -318,7 +431,14 @@ async function boot() {
     if (demo) office.theme = themeById(demo.snapshot.theme);
     game.scene.add('office', office, true, { model, onSelect: openAgent, props, seed });
     // Phaser boots the scene on its own clock; the bar moves on once the room can draw.
-    const sceneUp = window.setInterval(() => { if ((office.sys?.settings?.status ?? 0) >= Phaser.Scenes.RUNNING) { clearInterval(sceneUp); loading.step('bridge', 'Connecting to the bridge'); } }, 100);
+    const sceneUp = window.setInterval(() => {
+      if ((office.sys?.settings?.status ?? 0) < Phaser.Scenes.RUNNING) return;
+      clearInterval(sceneUp); roomUp = true;
+      if (seated === undefined) loading.step('bridge', 'Connecting to the bridge');
+      reveal();
+    }, 100);
+    // Art that never arrives must not trap the card: the roster and chat work without the room.
+    window.setTimeout(() => { if (roomUp) return; loading.setNote('Still unpacking the office art'); roomUp = true; reveal(); }, 10_000);
     if (demo) {
       const { installDemoChrome } = await import('./demo');
       const chrome = installDemoChrome(document.getElementById('game')!, document.getElementById('feed')!, demo.snapshot);
@@ -327,7 +447,7 @@ async function boot() {
         office, hud, model, dialog, studio, get ready() { return (window as any).__herdrReady === true; } };
     } else {
       const demoLink = document.createElement('a');
-      demoLink.id = 'demo-launch'; demoLink.href = '?demo=1'; demoLink.textContent = '▶ Watch demo';
+      demoLink.id = 'demo-launch'; demoLink.href = '?demo=1'; demoLink.innerHTML = '▶ <span>Watch </span>demo';
       document.getElementById('game')!.append(demoLink);
       installEventDebugger(document.getElementById('game')!, (event) => {
         audio.unlock();
@@ -373,6 +493,7 @@ async function boot() {
   const settingsDialog = new SettingsDialog(settings, {
     revenue: lab || people ? undefined : () => hud.openSettings(),
     askNotifications: async () => 'Notification' in window && (await Notification.requestPermission()) === 'granted',
+    cue: () => audio.blip('tick'),
   });
   if (!lab) {
     const start = () => { audio.unlock(); removeEventListener('pointerdown', start); removeEventListener('keydown', start); };
@@ -389,7 +510,9 @@ async function boot() {
   const badge = (agents: AgentInfo[]) => {
     const n = agents.filter((a) => a.agent_status === 'blocked').length;
     document.title = n ? `(${n}) needs you · herdr story` : 'herdr story';
+    setFavicon(n > 0);
   };
+  setFavicon(false);
   if ((q.has('notify') || settings.value.notifications) && 'Notification' in window && Notification.permission === 'default') {
     const ask = () => { void Notification.requestPermission(); removeEventListener('pointerdown', ask); };
     addEventListener('pointerdown', ask);
@@ -399,13 +522,25 @@ async function boot() {
     new Notification(`${agentKind(a)} needs you`, { body: ev.title || a.pane_id, tag: a.pane_id });
   };
   // and a plain sign when the bridge is gone, rather than an office that quietly stops moving
-  let offline: HTMLElement | null = null;
-  setInterval(() => {
+  let offline: HTMLElement | null = null, wasDown = false, downSince = 0, backTimer = 0;
+  const checkBridge = () => {
     const down = !client.connected;
     document.body.classList.toggle('offline', down);
-    if (down && !offline) { offline = document.createElement('div'); offline.id = 'offline'; offline.textContent = 'bridge offline · reconnecting…'; document.body.appendChild(offline); }
-    if (!down && offline) { offline.remove(); offline = null; }
-  }, 1000);
+    if (down) {
+      if (!offline) { offline = document.createElement('div'); offline.id = 'offline'; offline.setAttribute('role', 'status'); document.body.appendChild(offline); anchorOfficeNotification(offline); }
+      if (!wasDown) { clearTimeout(backTimer); downSince = Date.now(); audio.blip('error'); }
+      offline.hidden = false; offline.classList.remove('back');
+      offline.textContent = Date.now() - downSince > 20_000 ? 'bridge offline · is `npm run dev` running?' : 'bridge offline · reconnecting…';
+    } else if (wasDown && offline) {
+      // say so when it comes back, rather than the notice simply vanishing
+      const chip = offline;
+      chip.classList.add('back'); chip.textContent = 'bridge back · the office is live';
+      audio.blip('ok');
+      backTimer = window.setTimeout(() => { chip.hidden = true; }, 1600);
+    }
+    wasDown = down;
+  };
+  setInterval(checkBridge, 1000);
 
   // Office theme: a floating gallery over the room rather than a dropdown in the sidebar. Each
   // swatch is that theme's own wall colour, carpet tile and brick, stacked — a cross-section of
@@ -430,8 +565,12 @@ async function boot() {
     gallery.addEventListener('click', async (e) => {
       const card = (e.target as HTMLElement).closest<HTMLElement>('.theme-card');
       if (!card) return;
+      // Show the pick and put the gallery away first: while it is open the room is asleep, so the
+      // choice was never seen being made and the new room only appeared as the gallery vanished.
+      gallery.querySelectorAll<HTMLElement>('.theme-card').forEach((el) => el.setAttribute('aria-current', String(el === card)));
+      open(false);
       await office.setTheme(card.dataset.id!);
-      paintBtn(); mark(); open(false);
+      paintBtn(); mark();
     });
     // A press anywhere outside puts it away, including a drag on the office. It has to ignore
     // presses inside the control: this fires before 'click', so closing on the button's own press
@@ -452,8 +591,9 @@ async function boot() {
   let welcomed = false;
   stopEarly();
   client.on((msg) => {
+    checkBridge();   // recovery lands with the first message, not up to a second after it
     if (msg.type === 'snapshot') {
-      if (!welcomed) { welcomed = true; loading.step('agents', `Seating ${msg.agents.length} ${msg.agents.length === 1 ? 'agent' : 'agents'}`); window.setTimeout(() => loading.finish(msg.agents.length), 500); }
+      if (!welcomed) { welcomed = true; seated = msg.agents.length; loading.step('agents', `Seating ${seated} ${seated === 1 ? 'agent' : 'agents'}`); reveal(); }
       workspaces = msg.workspaces ?? workspaces;
       dialog.writable = msg.writable;
       if (hireBtn) {
@@ -470,7 +610,8 @@ async function boot() {
       noteJournal(msg.studio); checkWeek();
       // The tail the bridge kept, so a reload does not come back to an empty sales strip. It is
       // history, not news: the roster lists it, the office does not re-enact it.
-      if (msg.money?.length) feed.money(msg.money);
+      if (msg.money?.length) { feed.money(msg.money); ticker?.seed(msg.money); }
+      seedTicker();
     } else if (msg.type === 'agents') { workspaces = msg.workspaces ?? workspaces; setOfficeLooks(msg.agents); model.setAgents(msg.agents); feed.summary(msg.agents); badge(msg.agents); dialog.sync(msg.agents); studio?.sync(model.studio, msg.agents, dialog.writable); hud.clock(); }
     else if (msg.type === 'studio') { model.setStudio(msg.studio); noteJournal(msg.studio); studio?.sync(msg.studio, [...model.agents.values()], dialog.writable); feed.refresh(); hud.bump(); }
     else if (msg.type === 'queue') dialog.queueUpdate(msg.item);
@@ -479,16 +620,19 @@ async function boot() {
       reactToMoney(msg.event);
     }
     else if (msg.type === 'event') {
-      const rankBefore = model.progressOf(msg.event.pane_id).rank;
       const shipped = model.noteEvent(msg.event);          // also true only on a real completion
       if (shipped.shipped) dialog.refreshProgress(msg.event.pane_id);
       feed.refresh();
       office.react(msg.event, shipped.levelled ? model.levelOf(msg.event.pane_id) : 0, shipped.stat);
       const who = model.agents.get(msg.event.pane_id);
       if (msg.event.kind === 'status') notify(who, msg.event);
-      if (shipped.shipped && who) party.show(who, msg.event, shipped.stat);
+      // What a finished turn sounds like: the card's fanfare when it shipped, one chord when the
+      // card could not be shown, and a plain settle when nothing was shipped at all.
+      if (shipped.shipped && who) { if (!party.show(who, msg.event, shipped.stat)) audio.play('ship'); }
+      else if (msg.event.kind === 'status' && msg.event.prev === 'working' && (msg.event.status === 'idle' || msg.event.status === 'done')) audio.blip('settle');
       if (shipped.shipped && who) noteShip(who);
-      if (shipped.levelled && who) { const after = model.progressOf(who.pane_id); if (after.rank !== rankBefore) scenes.play(trainingSeminar(actorOf(who), `${employeeName(who)} is promoted`, `Now ${after.rank} · Lv ${after.level}`)); }
+      // A level-up raises the level by exactly one, so the rank changed if the level below had another.
+      if (shipped.levelled && who) { const after = model.progressOf(who.pane_id); if (after.level > 1 && rankForLevel(after.level - 1) !== after.rank) scenes.play(trainingSeminar(actorOf(who), `${employeeName(who)} is promoted`, `Now ${after.rank} · Lv ${after.level}`, undefined, true)); }
       if (shipped.shipped) hud.bump();
     }
     if (msg.type === 'snapshot' || msg.type === 'agents' || msg.type === 'studio') reception?.sync();
@@ -497,10 +641,11 @@ async function boot() {
   if (!lab && !people) hud.start(); else document.getElementById('hud')?.remove();
   (window as any).hs = { model, client, game, party, dialog, office, hud, billingSetup, studio, bossCutscene, scenes, reception, cat };
   (window as any).__herdrReady = true;
+  bootSucceeded();
 }
 void boot().catch((error) => {
-  loading.fail((error as Error).message || String(error));
-  const box = document.getElementById('boot-error');
-  if (box) { box.hidden = false; box.textContent = `Could not start the office: ${(error as Error).message || String(error)}`; }
+  const message = (error as Error).message || String(error);
+  loading.fail(message);
+  bootFailed(message);
   console.error(error);
 });

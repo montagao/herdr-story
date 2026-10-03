@@ -5,6 +5,9 @@
 #studio-panel[hidden],#studio-dock[hidden],#studio-toast[hidden],#room-edit-bar[hidden],#studio-recap[hidden] { display:none; }
 /* One set of studio tabs at a time: the dock under the office bows out while the window is up. */
 body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
+/* The window takes focus itself so Escape and the tab trap work at once. It is not a control,
+   so it shows no ring, however it came to be focused. */
+.studio-window:focus-visible { outline:none; }
 .studio-window { display:flex; outline:none; flex-direction:column; width:min(960px,100%); height:min(760px,90dvh); background:#f4f6f8; border:3px solid var(--steel); border-radius:8px; box-shadow:0 6px 0 rgba(0,0,0,.25); overflow:hidden; }
 .studio-header { display:flex; align-items:center; gap:9px; padding:6px 8px 6px 12px; background:linear-gradient(#e9f0f6,#c9d6e2); border-bottom:2px solid var(--steel); }
 .studio-header b { font-size:18px; font-weight:normal; }
@@ -23,12 +26,14 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .studio-window :focus-visible,#studio-dock :focus-visible,#room-edit-bar :focus-visible,#studio-recap :focus-visible { outline:2px solid #f5c94b; outline-offset:1px; }
 .studio-window .primary,#room-edit-bar .primary { color:#fff; background:linear-gradient(#4aa5d2,#2b7ba4); border-color:#1d5f80; text-shadow:0 1px #1d5f80; }
 .studio-window .primary:hover,#room-edit-bar .primary:hover { background:linear-gradient(#5bb3dd,#3389b3); border-color:#1d5f80; }
-.studio-tabs { display:flex; flex:none; background:#eef2f5; border-bottom:1px solid #b9c6d0; }
-.studio-tabs button { position:relative; display:flex; align-items:center; justify-content:center; gap:6px; flex:1; padding:8px 6px 9px; border:0; border-radius:0; background:transparent; color:var(--muted-ink); font-size:12px; }
+.studio-tabs { position:relative; display:flex; flex:none; background:#eef2f5; border-bottom:1px solid #b9c6d0; }
+.studio-tabs button { position:relative; display:flex; align-items:center; justify-content:center; gap:6px; flex:1; min-width:0; padding:8px 6px 9px; border:0; border-radius:0; background:transparent; color:var(--muted-ink); font-size:12px; }
 .studio-tabs button:hover { background:#e3ebf1; border-color:transparent; }
-.studio-tabs button:active { transform:none; }
+.studio-tabs button:active { transform:none; background:#d5e1ea; }
 .studio-tabs button[aria-current="page"] { color:var(--studio-ink); background:var(--paper); }
-.studio-tabs button[aria-current="page"]::after { content:''; position:absolute; left:calc(50% - 22px); bottom:0; width:44px; height:3px; background:var(--blue); }
+/* One marker for the whole row, slid under the current tab. The tabs share the width equally,
+   so the page's place in the row is all it needs to know. */
+.studio-tabs .tab-ink { position:absolute; left:0; bottom:0; width:20%; height:3px; pointer-events:none; background:linear-gradient(var(--blue),var(--blue)) center / 44px 100% no-repeat; translate:calc(var(--tab,0) * 100%) 0; transition:translate var(--pop-ms) var(--glide-ease); }
 .studio-tabs i { display:flex; color:#7e94a4; }
 .studio-tabs button[aria-current="page"] i { color:var(--marker); }
 .studio-content { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:14px 16px 18px; background:var(--paper); font-size:12px; line-height:1.45; scrollbar-width:thin; scrollbar-color:#b3c2cc transparent; }
@@ -60,7 +65,10 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .studio-menu-list [data-option][aria-selected="true"] { background:#dbe8f2; border-color:#b3c6d6; }
 .studio-menu-list [data-option][aria-selected="true"]::before { content:''; position:absolute; left:9px; top:50%; border:4px solid transparent; border-left-color:currentColor; transform:translateY(-50%); }
 .studio-window .studio-menu-list [data-option]:hover,.studio-window .studio-menu-list [data-option]:focus-visible { outline:none; background:#375b78; color:#fff; border-color:#17334b; box-shadow:inset 0 0 0 1px #7998b1; }
-@media (pointer:coarse) { .studio-menu-list [data-option] { min-height:42px; } }
+@media (pointer:coarse) {
+  .studio-menu-list [data-option] { min-height:42px; }
+  .room-projects button, .appearance-controls button, .checklist-edit-row button { min-width:40px; min-height:40px; }
+}
 /* On the whiteboard page the switcher is the heading, in the board's marker ink. */
 .board-switch { flex:0 1 auto; max-width:100%; }
 .board-switch .studio-menu-button { width:auto; max-width:100%; padding:2px 24px 3px 2px; border:0; border-bottom:2px dotted var(--board-color); border-radius:0; background:transparent; box-shadow:none; color:var(--board-color); font-size:18px; line-height:1.2; }
@@ -79,7 +87,7 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .project-whiteboard.blank header > div p { margin:5px 0 0; max-width:440px; }
 .project-whiteboard.blank header > button { flex:none; }
 .board-tally { flex:none; text-align:right; font-size:13px; color:#7a918e; }
-.board-tally b { font-size:26px; font-weight:normal; color:var(--board-color); }
+.board-tally b { display:inline-block; font-size:26px; font-weight:normal; color:var(--board-color); }
 .board-tally small { display:block; margin-top:1px; font-size:9px; letter-spacing:.1em; text-transform:uppercase; }
 .board-notes,.milestone-notes { white-space:pre-wrap; overflow-wrap:anywhere; }
 .board-notes { margin:10px 0 0; color:#3f5a6a; }
@@ -94,18 +102,31 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .milestone-list:empty { display:none; }
 .milestone-card { background:#fff; border:1px solid #b6c9ce; border-left:4px solid #b6c9ce; padding:10px 12px 8px; }
 .milestone-card.completed { border-left-color:#39815b; background:#f5faf5; }
+/* Every step ticked: the card turns to gold and waits for its button. */
+.milestone-card.ready { border-left-color:#f5c94b; }
+.milestone-card.ready .goal-meter i,.board-meter.full i { background:repeating-linear-gradient(90deg,#f5c94b 0 8px,#ffe89a 8px 10px); }
+.milestone-actions .nudge { animation:ready-blink .3s steps(2,end) 2; }
+@keyframes ready-blink { 50% { background:#fff3c4; border-color:#c69a3e; color:#674c30; text-shadow:none; } }
+/* A milestone just completed: its number is stamped into a tick and the card flashes twice. */
+.milestone-card.just-done { animation:goal-flash .36s steps(2,end) 2; }
+.just-done .milestone-number,.board-tally b.just-done { animation:goal-stamp .24s steps(4,end); }
+@keyframes goal-flash { 50% { background:#fff3c4; border-color:#f5c94b; } }
+@keyframes goal-stamp { 0% { scale:2.4; } 50% { scale:.85; } 75% { scale:1.15; } }
 .milestone-top { display:flex; align-items:center; gap:10px; }
 .milestone-number { display:grid; place-items:center; width:28px; height:28px; flex:none; color:#536b85; background:#e9f0f3; font-size:14px; }
 .completed .milestone-number { background:#39815b; color:#fff; }
+.milestone-number svg { display:block; }
 .milestone-top > div { flex:1; min-width:0; }
 .milestone-top h3 { margin:0 0 1px; overflow-wrap:anywhere; }
 .milestone-top small { color:#6c838c; font-size:10px; }
 .milestone-notes { margin:8px 0; color:#3f5a6a; }
 .goal-meter { height:5px; margin:10px 0; padding:1px; background:#344654; border:1px solid #253642; border-radius:2px; }
-.goal-meter i { display:block; height:100%; background:repeating-linear-gradient(90deg,#3fae63 0 8px,#6fd18f 8px 10px); }
+.goal-meter i { display:block; height:100%; background:repeating-linear-gradient(90deg,#3fae63 0 8px,#6fd18f 8px 10px); transition:width var(--pop-ms) steps(4,end); }
 .goal-checklist { display:grid; gap:5px; }
 .goal-checklist label { display:flex; align-items:flex-start; gap:7px; overflow-wrap:anywhere; }
 .goal-checklist label.checked span { text-decoration:line-through; color:#758a8d; }
+.goal-checklist label.ticked input { animation:tick-pop .16s steps(3,end); }
+@keyframes tick-pop { 50% { scale:1.35; } }
 .goal-contributors { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin-top:9px; }
 .goal-contributors:empty { display:none; }
 .milestone-actions { display:flex; align-items:center; gap:5px; padding-top:8px; margin-top:9px; border-top:1px solid #e0e9e9; }
@@ -117,6 +138,7 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .studio-empty { padding:22px 16px; display:flex; flex-direction:column; align-items:center; text-align:center; color:#476371; }
 .studio-empty > span { color:#8da7b2; margin-bottom:8px; }
 .studio-empty > span svg { display:block; }
+.studio-empty.caught-up > span { color:#39815b; }
 .studio-empty > b { font-size:15px; font-weight:normal; }
 .studio-empty p { max-width:380px; }
 /* ---- editors ---- */
@@ -144,7 +166,7 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .studio-check { display:flex; align-items:center; gap:8px; }
 /* ---- employees ---- */
 .people-layout { display:grid; grid-template-columns:205px minmax(0,1fr); gap:18px; align-items:start; }
-.employee-list { display:grid; gap:3px; position:sticky; top:0; max-height:600px; overflow:auto; padding-right:4px; scrollbar-width:thin; }
+.employee-list { display:grid; gap:3px; position:sticky; top:0; max-height:min(600px, calc(90dvh - 150px)); overflow:auto; padding-right:4px; scrollbar-width:thin; }
 .employee-list button { display:flex; align-items:center; gap:6px; padding:5px 5px; text-align:left; border-color:transparent; border-bottom-width:1px; background:#eef3f5; }
 .employee-list button:active { transform:none; }
 .employee-list button[aria-current="true"] { border-color:#6894a8; background:#dfeef3; box-shadow:inset 3px 0 var(--blue); }
@@ -157,6 +179,8 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .employee-passport small { font-size:9px; color:#6f878b; letter-spacing:.08em; }
 .employee-passport h2 { overflow-wrap:anywhere; margin:4px 0 2px; font-size:20px; }
 .employee-passport p { margin:2px 0; }
+.passport-xp { max-width:230px; }
+.passport-xp .xp-track i { background:repeating-linear-gradient(90deg,var(--level-bg) 0 10px,var(--level-edge) 10px 12px); }
 .career-totals { display:flex; gap:18px; margin-top:8px; }
 .career-totals b { font-size:20px; font-weight:normal; color:#175f8d; }
 .career-totals small { display:block; font-size:9px; color:var(--muted-ink); margin-top:1px; }
@@ -181,6 +205,10 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .journal-filters .studio-field:last-of-type { flex:1.4; }
 .journal-row { display:grid; grid-template-columns:36px minmax(0,1fr) auto; gap:4px 12px; align-items:start; padding:12px 4px; border-bottom:1px solid #e1e9ec; }
 .journal-row:hover { background:#f6fafb; }
+/* Work that lands while the list is being read drops in and stays warm for a moment. */
+.journal-row.arrived,.trophy-card.arrived { animation:row-arrive var(--pop-ms) var(--glide-ease),row-fresh 2s steps(1,end); }
+@keyframes row-arrive { from { translate:0 -8px; } }
+@keyframes row-fresh { from { background-color:#fff7dd; } }
 .journal-row[data-memory-chat] { cursor:pointer; }
 .studio-window .entry-edit { padding:0; border:0; background:none; color:#5d7285; font-size:10px; text-decoration:underline; text-underline-offset:2px; }
 .studio-window .entry-edit:hover { color:#237598; background:none; }
@@ -238,8 +266,11 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .journal-day { position:sticky; top:-14px; z-index:1; margin:16px 0 2px; padding:5px 2px; background:var(--paper); border-bottom:2px solid #d5dee5; font-size:13px; color:#3e5a6c; letter-spacing:.06em; text-transform:uppercase; }
 .journal-day:first-child { margin-top:0; }
 .trophy-shelves { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:20px 14px; padding-top:8px; }
-.trophy-card { text-align:center; padding:12px 12px 14px; min-width:0; border:1px solid #d4bc8f; border-bottom:8px solid #96714d; background:#fffbed; box-shadow:0 4px 0 #ded0b4; }
-.trophy-card > img { width:45px; height:auto; image-rendering:pixelated; margin:6px 0 10px; }
+.trophy-card { position:relative; text-align:center; padding:12px 12px 14px; min-width:0; border:1px solid #d4bc8f; border-bottom:8px solid #96714d; background:#fffbed; box-shadow:0 4px 0 #ded0b4; }
+.trophy-card > img { width:48px; height:auto; image-rendering:pixelated; margin:6px 0 10px; }
+.trophy-card:hover > img { animation:studio-hop .15s steps(2,end) 4 alternate; }
+@keyframes studio-hop { to { translate:0 -3px; } }
+.trophy-card.new::before { content:'NEW'; position:absolute; top:6px; left:-4px; padding:1px 6px; border:1px solid #96702a; background:#f5c94b; box-shadow:0 2px 0 #96702a; color:#513509; font-size:9px; letter-spacing:.1em; }
 .trophy-card > small { display:block; font-size:9px; color:#90754e; text-transform:uppercase; letter-spacing:.08em; }
 .trophy-card [data-entry] { display:block; width:100%; margin-top:6px; background:none; border:0; padding:0; font-size:15px; color:#674c30; overflow-wrap:anywhere; }
 .trophy-card [data-entry]:active { transform:none; }
@@ -265,19 +296,55 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 #studio-dock { position:absolute; bottom:14px; left:50%; transform:translateX(-50%); z-index:6; display:flex; flex-wrap:wrap; justify-content:center; width:max-content; max-width:calc(100% - 20px); padding:4px; gap:2px; background:#f4f6f8; border:2px solid var(--steel,#7b8794); border-radius:6px; box-shadow:0 4px 0 rgba(0,0,0,.25); }
 #studio-dock button { display:flex; align-items:center; flex-direction:column; gap:3px; min-width:62px; border:1px solid transparent; border-radius:3px; padding:5px 8px 4px; background:none; color:#2d4356; cursor:pointer; font:10px var(--font); }
 #studio-dock button:hover { background:#e3ebf1; border-color:#98b2c0; }
+/* motion.css moves a pressed dock button down; these flatten it to match. Nothing here changes a
+   width: the dock has to keep fitting a phone. */
+#studio-dock button:active:not(:disabled) { background:#d3dfe8; border-color:#7998b1; box-shadow:inset 0 2px #b9c9d6; }
 #studio-dock [data-arrange-room] { min-width:104px; color:#fff; background:#2b7ba4; border-color:#1d5f80; box-shadow:inset 0 1px #79c5e9,0 2px #1d5f80; }
 #studio-dock [data-arrange-room]:hover { background:#3389b3; }
+#studio-dock [data-arrange-room]:active:not(:disabled) { background:#256f95; border-color:#1d5f80; box-shadow:inset 0 2px #1d5f80; }
+/* The dock comes up from the floor when it takes its place back from the arrange bar. The bar
+   itself just appears: its buttons are measured the moment it shows, and a box caught part-way
+   through a move reports a height a hair under its real one. */
+#studio-dock { animation:bar-up var(--pop-ms) var(--glide-ease); }
+@keyframes bar-up { from { translate:0 14px; } }
+/* What has landed since the last look, counted on the bell. A pseudo-element, so the button's
+   own text stays exactly its label. */
+#studio-dock [data-recap-open] { position:relative; }
+#studio-dock [data-recap-open][data-count]::after { content:attr(data-count); position:absolute; top:1px; left:calc(50% + 2px); box-sizing:border-box; min-width:14px; height:14px; padding:0 3px; border:1px solid #96702a; border-radius:2px; background:#f5c94b; color:#3d2f18; font:10px/12px var(--font); text-align:center; }
+#studio-dock .ring i { animation:bell-ring .4s steps(4,end); }
+@keyframes bell-ring { 25% { translate:-2px 0; } 50% { translate:2px 0; } 75% { translate:-1px 0; } }
+#studio-dock .fresh { animation:dock-fresh .3s steps(2,end) 2; }
+@keyframes dock-fresh { 50% { background:#fff3c4; border-color:#f5c94b; } }
 #studio-dock [data-arrange-room] i { color:#fff; }
 #studio-dock button:disabled { opacity:.45; cursor:default; }
 #studio-dock i { display:flex; color:#5f7a8e; }
 #studio-dock i svg,#studio-dock [data-fit] svg { display:block; }
 #studio-dock [data-fit] { min-width:82px; justify-content:center; border-left:1px solid #c3d0d9; border-radius:0; }
-#studio-toast { position:fixed; z-index:60; bottom:16px; left:50%; transform:translateX(-50%); width:max-content; max-width:calc(100vw - 28px); padding:8px 14px; background:#224b61; color:#fff; border:2px solid #aec9d3; border-radius:4px; box-shadow:0 3px 0 rgba(0,0,0,.3); font:12px/1.4 var(--font); pointer-events:none; }
-#studio-recap { position:absolute; top:80px; left:14px; z-index:6; display:flex; background:#fff9e1; border:2px solid #b79651; border-radius:4px; box-shadow:0 3px 0 #70532f55; font-family:var(--font); }
+/* The toast: one line that pops up over the office. studio.ts sets left and bottom so it clears
+   the dock or the arrange bar. The box never takes clicks, only its button does. It is centred
+   with transform, so its motion uses the separate translate property. */
+#studio-toast { position:fixed; z-index:60; bottom:16px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:8px; width:max-content; max-width:calc(100vw - 28px); padding:8px 14px; background:#224b61; color:#fff; border:2px solid #aec9d3; border-radius:4px; box-shadow:0 3px 0 rgba(0,0,0,.3); font:12px/1.4 var(--font); pointer-events:none; }
+#studio-toast.arrive { animation:toast-in var(--pop-ms) var(--pop-ease); }
+@keyframes toast-in { from { translate:0 10px; } }
+#studio-toast i { display:flex; flex:none; }
+#studio-toast i svg { display:block; }
+#studio-toast[data-tone="ok"] i { color:#8fe0a6; }
+#studio-toast[data-tone="error"] { background:#6b2a25; border-color:#e8a39b; }
+#studio-toast[data-tone="error"] i { color:#ffc9c2; }
+#studio-toast[data-tone="cheer"] { background:#fff3c4; color:#5b4420; border-color:#c69a3e; }
+#studio-toast[data-tone="cheer"] i { color:#a3761c; }
+/* The welcome-back card slides in from the wall. No fade: it sits inside #game, where animations
+   are paused behind an open window, and a paused first frame has to be readable. */
+#studio-recap { position:absolute; top:80px; left:14px; z-index:6; display:flex; background:#fff9e1; border:2px solid #b79651; border-radius:4px; box-shadow:0 3px 0 #70532f55; font-family:var(--font); animation:recap-in var(--pop-ms) var(--pop-ease); }
+@keyframes recap-in { from { translate:-18px 0; } }
+#studio-recap:has([data-recap]:active) { translate:0 2px; box-shadow:0 1px 0 #70532f55; }
 #studio-recap button { border:0; background:none; color:#6b532d; padding:8px 11px; cursor:pointer; text-align:left; font-family:var(--font); }
+#studio-recap button:hover { background:#fff0bf; }
 #studio-recap span { display:block; font-size:8px; letter-spacing:.1em; margin-bottom:3px; }
 #studio-recap b { font-size:13px; font-weight:normal; }
 #studio-recap i { font-style:normal; margin-left:10px; }
+#studio-recap .recap-coin { display:inline-flex; margin:0 6px 0 0; vertical-align:-3px; color:#b9891f; animation:studio-hop .15s steps(2,end) 4 alternate; }
+#studio-recap .recap-coin svg { display:block; }
 #studio-recap small { font-size:10px; color:#8a6f3f; }
 #studio-recap [data-dismiss] { padding:4px 8px; align-self:flex-start; font-size:18px; }
 #room-edit-bar { position:absolute; left:10px; right:10px; bottom:12px; z-index:7; padding:8px 10px; background:#f4f6f8; border:2px solid #7b8794; border-radius:6px; box-shadow:0 4px 0 rgba(0,0,0,.25); color:#294f65; font-family:var(--font); }
@@ -291,7 +358,8 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .room-edit-tools > select { flex:1; min-width:180px; padding:6px; min-height:40px; color:#294f65; background:#fff; border:1px solid #93a6b5; border-radius:3px; }
 #room-edit-bar button { padding:6px 10px; min-height:40px; font-size:12px; }
 .room-nudge { display:flex; gap:3px; }
-#room-edit-bar .room-nudge button { min-width:40px; padding:4px; font-size:18px; }
+#room-edit-bar .room-nudge button { display:grid; place-items:center; min-width:40px; padding:4px; }
+.room-nudge svg { display:block; }
 .room-edit-browse { display:flex; gap:6px; margin-left:auto; }
 .employee-customize { margin-left:auto; border:1px solid #8fa7b8; border-bottom-width:3px; border-radius:3px; padding:4px 8px; background:#fff; color:#325770; font:11px var(--font); cursor:pointer; }
 .employee-customize:active { transform:translateY(2px); border-bottom-width:1px; }
@@ -301,8 +369,9 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 #game:has(#studio-dock) #event-debug-tray { position:absolute; right:0; bottom:38px; }
 @media (max-width:820px) {
   #app { height:100dvh; }
-  #game { flex:1; min-height:0; height:55dvh; }
-  #feed { height:45dvh; }
+  /* half each: the dock is one row now, so the office can spare the roster a row of agents */
+  #game { flex:1; min-height:0; height:50dvh; }
+  #feed { height:50dvh; }
   #studio-panel { padding:0; }
   .studio-window { width:100%; height:100dvh; max-height:100dvh; border:0; border-radius:0; }
   .studio-content { padding:12px; }
@@ -326,7 +395,9 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
   [data-profile-preview] { width:94px; height:110px; }
   [data-profile-preview] canvas { max-width:90px; max-height:90px; }
   .editor-pair { grid-template-columns:1fr; }
-  .contributor-picker { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  /* the form is the only scroller on a phone: a second one inside it trapped the finger */
+  .contributor-picker { grid-template-columns:repeat(2,minmax(0,1fr)); max-height:none; overflow:visible; }
+  .checklist-edit-row [data-step-text] { font-size:16px; }
   .journal-heading { flex-wrap:wrap; gap:6px; }
   .journal-heading > div { flex-basis:100%; }
   .journal-filters .studio-field:last-of-type { flex-basis:100%; }
@@ -336,11 +407,13 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
   .trophy-shelves { grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 8px; }
   .trophy-card { padding:10px 8px; }
   .catalog-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }
-  #studio-dock { bottom:8px; gap:3px; padding:4px; width:calc(100% - 16px); display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); }
-  #studio-dock button { min-width:0; min-height:44px; padding:4px 2px; font-size:9px; }
-  #studio-dock [data-arrange-room],#studio-dock [data-fit] { min-width:0; }
+  #studio-dock { bottom:8px; }
   #agent-hint { display:none; }
-  #room-edit-bar { left:6px; right:6px; bottom:6px; padding:8px; }
+  /* the bar keeps its controls and drops its prose: on a phone it stood five rows tall over half the office */
+  #room-edit-bar { left:6px; right:6px; bottom:6px; padding:6px; }
+  .room-edit-help, .room-edit-heading span { display:none; }
+  .room-edit-tools { gap:4px; margin-top:6px; }
+  #studio-recap span { font-size:10px; letter-spacing:.06em; }
   .room-edit-heading { gap:6px; }
   .room-edit-heading b { font-size:12px; }
   .room-edit-heading span { font-size:9px; }
@@ -364,12 +437,23 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
   .entry-meta,.entry-aside { font-size:12px; }
   .entry-notes.clamped { -webkit-line-clamp:5; max-height:7.5em; }
 }
-@media (prefers-reduced-motion:reduce) { #studio-panel *,#studio-dock *,#room-edit-bar * { scroll-behavior:auto; transition:none; animation:none; } }
+@media (prefers-reduced-motion:reduce) { #studio-panel *,#studio-dock,#studio-dock *,#studio-dock .fresh,#studio-dock .ring i,#room-edit-bar,#room-edit-bar *,#studio-recap,#studio-recap .recap-coin,#studio-toast.arrive { scroll-behavior:auto; transition:none; animation:none; } }
 
 #studio-dock [data-fit][aria-pressed="true"] { background:#d7e6f1; color:#17334b; border-color:#7998b1;
   box-shadow:inset 0 0 0 1px #f8fcff; }
 #studio-dock [data-fit][aria-pressed="true"] i { color:#245b80; }
-@media (max-width:360px) { #studio-dock button { min-width:43px; padding-left:3px; padding-right:3px; } }
+/* Where the office pane is too narrow for the labelled dock, it is one row of icons: a phone, and
+   a desktop window narrow enough that the roster's 360px leaves the office under 680. With its
+   labels it wrapped to two or three rows and covered up to a third of the office; the names are
+   still there for screen readers, and each button has its title. */
+@media (max-width:680px), (min-width:821px) and (max-width:1040px) {
+  #studio-dock { gap:2px; padding:3px; max-width:calc(100% - 16px); flex-wrap:nowrap; }
+  #studio-dock button { position:relative; flex:0 1 auto; width:44px; min-width:0; min-height:44px; padding:4px 0; justify-content:center; }
+  #studio-dock button > span { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+  #studio-dock [data-arrange-room],#studio-dock [data-fit] { min-width:0; }
+  /* the test tray's toggle sits above the row rather than on it */
+  #game:has(#studio-dock) #event-debug { bottom:70px; }
+}
 .journal-row.journal-highlight { outline:2px solid #2a87b9; outline-offset:-2px; background:#eaf6ff; }
 
 .journal-mailboxes { display:flex; gap:6px; margin:12px 0; }
@@ -392,8 +476,11 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 
 #studio-save-status[hidden],#studio-dock button[hidden] { display:none; }
 #studio-save-status { position:fixed; z-index:120; top:12px; left:50%; transform:translateX(-50%); max-width:calc(100% - 24px); width:max-content; display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 14px; border:2px solid #71899b; background:#f4f6f8; color:#243e51; box-shadow:0 4px 0 #20334455; font:12px var(--font); }
-#studio-save-status button,#studio-toast button { font:inherit; cursor:pointer; padding:6px 10px; border:1px solid #71899b; background:#e0edf5; color:#243e51; }
-#studio-toast.has-action { pointer-events:auto; display:flex; align-items:center; gap:12px; }
+#studio-save-status button,#studio-toast button { font:inherit; cursor:pointer; padding:5px 10px; border:1px solid #71899b; border-bottom-width:3px; border-radius:3px; background:#e0edf5; color:#243e51; }
+#studio-save-status button:hover,#studio-toast button:hover { background:#f2f8fc; }
+#studio-save-status button:active,#studio-toast button:active { transform:translateY(2px); border-bottom-width:1px; margin-bottom:2px; }
+#studio-save-status button:disabled,#studio-toast button:disabled { cursor:default; opacity:.5; transform:none; border-bottom-width:3px; margin-bottom:0; }
+#studio-toast button { flex:none; margin-left:4px; pointer-events:auto; }
 #studio-toast[hidden] { display:none; }
 .studio-draft-row { display:flex; align-items:center; gap:10px; padding:14px 0; border-bottom:1px solid #c3d0d9; }
 .studio-draft-row > div { flex:1; min-width:0; overflow-wrap:anywhere; }
@@ -416,9 +503,14 @@ body:has(#studio-panel:not([hidden])) #studio-dock { visibility:hidden; }
 .payment-fields > div { display:grid; grid-template-columns:145px minmax(0,1fr); gap:16px; padding:12px 0; border-bottom:1px solid #d6e0e5; }
 .payment-fields dt { color:#5d7285; }
 .payment-fields dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; }
+.payment-ids { display:flex; flex-wrap:wrap; gap:6px 18px; margin:14px 0 0; color:#5d7285; font-size:11px; }
+.payment-ids span { display:flex; flex-direction:column; gap:1px; overflow-wrap:anywhere; }
+.payment-ids small { font-size:9px; letter-spacing:1px; color:#8397a5; }
 .payment-note { line-height:1.6; padding:12px; background:#fff8dd; border-left:3px solid #c5a555; }
 .payment-window a { color:#24678e; text-underline-offset:3px; }
 .payment-actions { display:flex; align-items:center; justify-content:space-between; gap:14px; padding-top:20px; }
 .payment-actions button { font:inherit; padding:9px 12px; border:1px solid #7c9aac; border-radius:3px; color:#29495f; background:#e7f1f7; cursor:pointer; box-shadow:0 2px #7c9aac; }
 .payment-window :focus-visible { outline:2px solid #2b7ba4; outline-offset:3px; }
 @media(max-width:600px) { .payment-paper { padding:16px; } .payment-fields > div { grid-template-columns:105px minmax(0,1fr); gap:10px; } .payment-window { font-size:12px; } .payment-actions { flex-wrap:wrap; } }
+.journal-glyph.subscription { color:#75518e; background:#f0eaf5; }
+.kind-subscription .entry-kind { color:#75518e; }

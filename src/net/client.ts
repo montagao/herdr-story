@@ -4,7 +4,7 @@ import type { CallOptions, InteractionTiming, OfficeClient, OutputUpdate } from 
 
 export type { CallOptions, InteractionTiming, OfficeClient, OutputUpdate } from './office-client';
 type Listener = (msg: ServerMsg) => void;
-const readOnly = (method: string) => ['ping', 'agent.list', 'agent.get', 'agent.read', 'agent.transcript', 'agent.explain',
+const readOnly = (method: string) => ['ping', 'agent.list', 'agent.get', 'agent.read', 'agent.transcript', 'money.rates', 'agent.explain',
   'agent.settings.options', 'agent.boss.briefing', 'agent.boss.archive', 'studio.get', 'studio.journal', 'studio.action.status', 'payment.detail', 'agent.message.status', 'sweep.scan', 'sweep.prepare'].includes(method);
 const interrupted = (method: string, message: string) => Object.assign(new Error(readOnly(method) ? message
   : `${message}. The bridge may have accepted this action; check its status before retrying.`),

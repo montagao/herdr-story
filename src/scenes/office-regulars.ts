@@ -3,12 +3,15 @@ import { bodyKey, faceKey } from '../sprites';
 import { walkerDepth } from './depth';
 import { type Spot, type Wander } from './wander';
 import { fromOfficeCanvas } from './Furnishings';
-import { JANITOR_LOOK, paintCat, type CatPose } from './regulars-art';
+import { floatOff, popIn } from './fx';
+import { JANITOR_LOOK, paintCat, paintHeart, type CatPose } from './regulars-art';
 import { JANITOR_ANCHOR_X, JANITOR_WIDTH, JANITOR_HEIGHT, janitorKey, paintJanitor, type JanitorDirection, type JanitorMode } from './janitor-art';
 
 type Regular = { kind: 'cat' | 'janitor'; node: Phaser.GameObjects.Container; image: Phaser.GameObjects.Image;
   hint: Phaser.GameObjects.Text;
-  path: Spot[]; until: number; phase: 'rest' | 'walk'; flip: boolean; away: boolean; hovered: boolean };
+  path: Spot[]; until: number; phase: 'rest' | 'walk'; flip: boolean; away: boolean; hovered: boolean;
+  /** The cat stays on her feet until then, and only after that curls up. */
+  napAt: number };
 interface Options {
   canInteract(): boolean; onCat?(): void; onJanitor?(): void;
   desks(): Spot[];
@@ -23,17 +26,25 @@ function texture(scene: Phaser.Scene, key: string, draw: (c: CanvasRenderingCont
 export class OfficeRegulars {
   readonly actors: Regular[] = [];
   private reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+  /** Their own clock, running only while the floor does: on scene time, which leaps across a
+   *  sleeping loop, both set off the moment any window closed and a pet had worn off unseen. */
+  private clock = 0;
   private petUntil = 0;
+  private hearts = 0; private nextHeart = 0;
   constructor(private scene: Phaser.Scene, private floor: Wander, private options: Options) {
     for (const pose of ['stand', 'walk', 'sleep', 'happy'] as CatPose[]) for (let step = 0; step < 2; step++) for (const away of [false, true]) {
       texture(scene, `office-cat:${pose}:${step}:${away}`, c => paintCat(c, pose, step, away));
     }
+    texture(scene, 'office-cat:heart', c => paintHeart(c, 1, 1, '#694c3e'), 7, 7);
     const body = scene.textures.get(bodyKey(JANITOR_LOOK.body)).getSourceImage() as CanvasImageSource;
     const face = scene.textures.get(faceKey(JANITOR_LOOK.face)).getSourceImage() as CanvasImageSource;
     for (const direction of ['se', 'sw', 'ne', 'nw'] as JanitorDirection[]) for (const mode of ['stand', 'walk', 'sweep'] as JanitorMode[]) {
       for (let step = 0; step < (mode === 'sweep' ? 8 : mode === 'walk' ? 4 : 1); step++)
         texture(scene, janitorKey(mode, direction, step), c => paintJanitor(c, body, face, mode, direction, step), JANITOR_WIDTH, JANITOR_HEIGHT);
     }
+    // Phaser only notices a pointer leaving an object when it moves on the canvas. One that goes
+    // straight off the edge left the resident under it held still, hint and all, until it came back.
+    scene.input.on('gameout', this.hideHints, this);
   }
   rebuild(at: Spot) {
     const old = this.actors.map(a => ({ kind: a.kind, x: a.node.x, y: a.node.y }));
@@ -47,9 +58,9 @@ export class OfficeRegulars {
       node.add(image);
       const action = kind === 'cat' ? this.options.onCat : this.options.onJanitor;
       const hint = this.scene.add.text(0, 0, kind === 'cat' ? 'Miso · Office cat\nPet & discover a memory' : `Gus · Janitor\n${action ? 'Review idle desks · Re-org' : 'Keeping the office tidy'}`, {
-        fontFamily: 'DotGothic16', fontSize: '8px', color: '#29475d', backgroundColor: '#f4f8fa', align: 'center',
-      }).setOrigin(.5, 1).setPadding(4, 3).setResolution(2).setDepth(100_000).setVisible(false);
-      const a: Regular = { kind, node, image, hint, path: [], until: this.scene.time.now + (kind === 'cat' ? 6500 : 2500), phase: 'rest', flip: false, away: false, hovered: false };
+        fontFamily: 'DotGothic16', fontSize: '8px', color: '#ffffff', backgroundColor: '#244558', align: 'center',
+      }).setOrigin(.5, 1).setPadding(4).setResolution(2).setDepth(100_000).setVisible(false);
+      const a: Regular = { kind, node, image, hint, path: [], until: this.clock + (kind === 'cat' ? 6500 : 2500), phase: 'rest', flip: false, away: false, hovered: false, napAt: 0 };
       node.setInteractive(new Phaser.Geom.Rectangle(kind === 'cat' ? -5 : -12, kind === 'cat' ? 5 : 0, kind === 'cat' ? 35 : 44, kind === 'cat' ? 20 : 36), Phaser.Geom.Rectangle.Contains);
       node.input!.cursor = action ? 'pointer' : 'default';
       node.on('pointerover', () => { if (this.options.canInteract()) { a.hovered = true; hint.setVisible(true); } });
@@ -58,14 +69,22 @@ export class OfficeRegulars {
         if (!this.options.canInteract() || !fromOfficeCanvas(this.scene, p) || Math.hypot(p.x - p.downX, p.y - p.downY) > 5) return;
         this.hideHints(); action?.();
       });
-      this.actors.push(a); this.draw(a, this.scene.time.now);
+      this.actors.push(a); this.draw(a, this.clock);
     }
   }
   hideHints() { for (const a of this.actors) { a.hovered = false; a.hint.setVisible(false); } }
-  pet() { this.petUntil = this.scene.time.now + 5500; }
-  update(now: number, delta: number) {
+  /** A pet from the cat's window. The floor sleeps behind that window, so nothing has run down
+   *  when it closes: she is still purring where she stood, and the hearts are still to come. */
+  pet() { this.petUntil = this.clock + 5500; this.hearts = 2; this.nextHeart = this.clock + 250; }
+  update(_time: number, delta: number) {
+    const now = this.clock += delta, still = this.reduced.matches;
     for (const a of this.actors) {
-      if (!this.reduced.matches && !a.hovered) {
+      const petted = a.kind === 'cat' && now < this.petUntil;
+      if (petted && !still && this.hearts && now > this.nextHeart && !(window as any).__quiet) {
+        this.nextHeart = now + 350;
+        this.heart(a, --this.hearts);
+      }
+      if (!still && !a.hovered && !petted) {
         if (!a.path.length && now > a.until) this.nextWalk(a, now);
         let distance = Math.min(delta, 100) * (a.kind === 'cat' ? 23 : 18) / 1000;
         while (distance > 0 && a.path.length) {
@@ -75,7 +94,7 @@ export class OfficeRegulars {
           distance -= move;
           if (d > move) break;
           a.path.shift();
-          if (!a.path.length) { a.phase = 'rest'; a.until = now + (a.kind === 'cat' ? 12_000 : 5000) + Math.random() * 6000; }
+          if (!a.path.length) { a.phase = 'rest'; a.until = now + (a.kind === 'cat' ? 12_000 : 5000) + Math.random() * 6000; a.napAt = now + 1800 + Math.random() * 1500; }
         }
       }
       this.draw(a, now);
@@ -97,8 +116,12 @@ export class OfficeRegulars {
     const still = this.reduced.matches, step = still ? 0 : Math.floor(now / (a.kind === 'cat' ? 180 : 190)) % 4;
     a.node.setDepth(walkerDepth(a.node.y)); a.hint.setPosition(a.node.x + 8, a.node.y - 5);
     if (a.kind === 'cat') {
-      const pose: CatPose = now < this.petUntil ? 'happy' : a.phase === 'walk' && !still ? 'walk' : 'sleep';
-      a.image.setTexture(`office-cat:${pose}:${step % 2}:${a.away}`).setFlipX(a.flip);
+      // She stands for a moment after a walk or a pet, and for as long as the pointer is on her,
+      // before curling up; asleep she breathes, and on her feet the tail flicks at its own slow pace.
+      if (a.hovered || now < this.petUntil) a.napAt = Math.max(a.napAt, now + 900);
+      const pose: CatPose = now < this.petUntil ? 'happy' : still ? 'sleep' : a.phase === 'walk' && !a.hovered ? 'walk' : now < a.napAt ? 'stand' : 'sleep';
+      const frame = still ? 0 : pose === 'walk' ? step % 2 : Math.floor(now / (pose === 'sleep' ? 1400 : 420)) % 2;
+      a.image.setTexture(`office-cat:${pose}:${frame}:${a.away}`).setFlipX(a.flip);
       // Keep the little body centred when the padded texture flips.
       a.image.setX(a.flip ? -16 : -4);
     } else {
@@ -108,6 +131,14 @@ export class OfficeRegulars {
       a.image.setTexture(janitorKey(mode, direction, frame));
     }
   }
+  /** A heart lifts off her head, the same one the window's portrait wears. The second starts a
+   *  little to one side so the pair reads as two. */
+  private heart(a: Regular, left: number) {
+    const heart = this.scene.add.image(a.node.x + (a.flip ? -3 : 19) + (left ? 0 : 4), a.node.y + 6, 'office-cat:heart').setDepth(walkerDepth(a.node.y) + 4000);
+    popIn(this.scene, heart);
+    this.scene.tweens.add({ targets: heart, y: heart.y - 9, duration: 500, ease: 'Quad.out' });
+    floatOff(this.scene, heart, 500, 3);
+  }
   private clear() { for (const a of this.actors) { a.hint.destroy(); a.node.destroy(); } this.actors.length = 0; }
-  destroy() { this.clear(); }
+  destroy() { this.scene.input.off('gameout', this.hideHints, this); this.clear(); }
 }

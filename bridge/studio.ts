@@ -1,3 +1,4 @@
+import { journalCategory, journalMoneyKind } from '../shared/billing';
 import { recapMoney } from '../shared/recap-money';
 import { mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -146,11 +147,12 @@ export class StudioStore {
     }
     const wanted = query.ids ? new Set(query.ids) : undefined;
     const names = new Map(state.employees.map(employee => [employee.id, employee.name]));
-    const ordered = state.journal.filter(entry => (!wanted || wanted.has(entry.id)) && (!project || entry.project === project) && (!kind || entry.kind === kind)
+    const ordered = state.journal.filter(entry => (!wanted || wanted.has(entry.id)) && (!project || entry.project === project) && (!kind || journalCategory(entry) === kind)
       && (query.read === undefined || !!entry.readAt === query.read)
     && (!query.trophies || entry.kind === 'milestone' || entry.kind === 'release') && entry.at > since
       && (!search || `${entry.title} ${entry.notes} ${entry.contributors.map(id => names.get(id) ?? '').join(' ')}`.toLowerCase().includes(search)))
       .sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+    if (query.summaryOnly) return { money: recapMoney(ordered), entries: [], cursor: null, total: ordered.length, revision: state.revision, epoch: this.journalEpoch };
     const remaining = before ? ordered.filter(entry => entry.at < before![0] || (entry.at === before![0] && entry.id < before![1])) : ordered;
     const entries = remaining.slice(0, limit), last = entries.at(-1);
     return { ...(query.moneySummary ? { money: recapMoney(ordered) } : {}), entries: structuredClone(entries.reverse()), cursor: remaining.length > limit && last ? JSON.stringify([last.at, last.id]) : null,
@@ -247,7 +249,8 @@ export class StudioStore {
       this.ensuredChanges++;
       const look = hash(a.pane_id);
       employee = { id: uuid(), version: 0, name: a.name?.trim() || agentKind(a).replace(/^./, c => c.toUpperCase()),
-        bio: '', kind: agentKind(a), face: (look >>> 8) % 36, body: look % 26, favorite: false, createdAt: Date.now(), shipped: 0, stats: emptyCareer() };
+        // 25 outfits, not 26: the last body sheet is a short one with no seated poses (OUTFIT_COUNT in src/sprites.ts).
+        bio: '', kind: agentKind(a), face: (look >>> 8) % 36, body: look % 25, favorite: false, createdAt: Date.now(), shipped: 0, stats: emptyCareer() };
       this.state.employees.push(employee); this.state.identities[identity] = employee.id;
     }
     this.paneIdentities.set(a.pane_id, identity);
@@ -331,7 +334,7 @@ export class StudioStore {
       const d = ev.detail!, ends = d.ends ? new Date(d.ends) : undefined;
       const notes = [d.comment ? `“${d.comment}”` : '', d.plan ? `Plan: ${d.plan}` : '', ends && !Number.isNaN(ends.getTime()) ? `${ev.kind === 'expired' ? 'Ended' : 'Ends'}: ${ends.toISOString().slice(0, 10)}` : ''].filter(Boolean).join('\n');
       this.state.journal.push({ id: uuid(), version: 0, at: ev.ts, kind: 'sale', title: `${ev.kind === 'expired' ? 'Expired' : 'Cancelled'} · ${why || ev.label}`.slice(0, 160), notes, project: '', contributors: [],
-        url: d.url ?? '', source: ev.source ?? 'stripe', moneyId: ev.id });
+        url: d.url ?? '', source: ev.source ?? 'stripe', moneyId: ev.id, moneyKind: ev.kind });
       this.state.revision++; this.persist();
       return true;
     }
@@ -340,12 +343,12 @@ export class StudioStore {
         subscription_pending: 'Subscription pending', subscription_resumed: 'Subscription resumed', subscribed: 'Subscribed', churned: 'Cancelled', expired: 'Expired', refund: 'Refund', sale: 'Payment' };
       const title = titles[ev.kind] ?? 'Subscription update';
       this.state.journal.push({ id: uuid(), version: 0, at: ev.ts, kind: 'sale', title: `${title}${ev.label ? ` · ${ev.label}` : ''}`.slice(0, 160),
-        notes: ev.detail?.plan ? `Plan: ${ev.detail.plan}` : '', project: '', contributors: [], url: ev.detail?.url ?? '', source: 'revenuecat', moneyId: ev.id });
+        notes: ev.detail?.plan ? `Plan: ${ev.detail.plan}` : '', project: '', contributors: [], url: ev.detail?.url ?? '', source: 'revenuecat', moneyId: ev.id, moneyKind: ev.kind });
       this.state.revision++; this.persist(); return true;
     }
     const verb = ev.kind === 'sale' ? 'Payment' : ev.kind === 'refund' ? 'Refund' : 'Dispute';
     this.state.journal.push({ id: uuid(), version: 0, at: ev.ts, kind: 'sale', title: ev.label ? `${verb} · ${ev.label}`.slice(0, 160) : verb, notes: '', project: '', contributors: [], url: ev.detail?.url ?? '',
-      source: ev.source ?? 'stripe', amount: ev.amount, currency: ev.currency, moneyId: ev.id });
+      source: ev.source ?? 'stripe', amount: ev.amount, currency: ev.currency, moneyId: ev.id, moneyKind: ev.kind });
     this.state.revision++; this.persist();
     return true;
   }
@@ -463,7 +466,7 @@ export class StudioStore {
         case 'employee.save': {
           const employee = this.employee(params.id); checkedVersion(employee, params.version);
           employee.name = text(params.name, 40, true); employee.bio = text(params.bio, 1000);
-          employee.face = integer(params.face, 0, 35); employee.body = integer(params.body, 0, 25); employee.favorite = params.favorite === true; employee.version++; break;
+          employee.face = integer(params.face, 0, 35); employee.body = integer(params.body, 0, 24); employee.favorite = params.favorite === true; employee.version++; break;
         }
         case 'employee.bind': {
           const agent = agents.find(a => a.pane_id === params.pane); if (!agent) throw new Error('That agent is no longer at a desk.');
@@ -479,7 +482,7 @@ export class StudioStore {
           const entry: JournalEntry = { id: existing?.id ?? uuid(), version: (existing?.version ?? -1) + 1, at: existing?.at ?? Date.now(),
             kind, title: text(params.title, 160, true), notes: text(params.notes, 6000), project,
             contributors: existing?.source === 'agent' || existing?.kind === 'sale' ? existing.contributors : this.contributors(params.contributors), url: link(params.url), source: existing?.source ?? 'manual', stat: existing?.stat,
-            readAt: existing?.readAt, minutes: existing?.minutes, model: existing?.model, amount: existing?.amount, currency: existing?.currency, moneyId: existing?.moneyId };
+            readAt: existing?.readAt, minutes: existing?.minutes, model: existing?.model, amount: existing?.amount, currency: existing?.currency, moneyId: existing?.moneyId, moneyKind: existing ? journalMoneyKind(existing) : undefined };
           if (existing) this.state.journal.splice(this.state.journal.indexOf(existing), 1, entry); else this.state.journal.push(entry); break;
         }
         case 'entry.read': {

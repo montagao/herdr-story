@@ -25,6 +25,11 @@ test('period totals include all matching payments beyond the current journal pag
     expect(first.money?.payments).toBe(5);
     const next=store.journalPage({since:999,limit:2,moneySummary:true,cursor:first.cursor!});
     expect(next.money).toEqual(first.money);
+    const summary = store.journalPage({ since:999, summaryOnly:true });
+    expect(summary.money).toEqual(first.money);
+    expect(summary.entries).toEqual([]);
+    expect(summary.cursor).toBeNull();
+    expect(summary.total).toBe(first.total);
     expect(store.journalPage({since:1005,moneySummary:true}).money?.totals).toEqual([{currency:'usd',amount:-2}]);
     expect(store.journalPage({since:2000,moneySummary:true}).money?.totals).toEqual([]);
   } finally {rmSync(dir,{recursive:true,force:true});}

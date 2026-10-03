@@ -6,7 +6,15 @@ import type { OfficeScene } from './scenes/OfficeScene';
 import { BODY_POSE, bodyKey, faceKey } from './sprites';
 import { drawExecutiveDesk, type PixelPen } from './scenes/studioFurniture';
 import { renderMarkdown } from './markdown';
+import { studioIcon } from './icons';
+import { audio } from './audio';
+import { reducedMotion, snapShut } from './motion';
 import './boss-cutscene.css';
+
+/** A line longer than this is something to read, not a remark, and appears whole. */
+const SPOKEN_MAX = 160;
+/** However long the line, Boss has said it within this. */
+const SPOKEN_MS = 600;
 
 /** The desk is the trigger; this window only polls for the answer while it is open. */
 export class BossCutscene {
@@ -32,7 +40,7 @@ export class BossCutscene {
     this.root.innerHTML = `<section class="boss-window" role="dialog" aria-modal="true" aria-labelledby="boss-heading">
       <header><span class="boss-stamp">STUDIO BRIEFING</span><b id="boss-heading">A word from Boss</b><button data-archive>Archive</button><button data-close aria-label="Close briefing">×</button></header>
       <div class="boss-scope"><label for="boss-project">Focus on</label><select id="boss-project" data-project><option value="">All projects</option></select><button data-review>Ask Boss</button></div>
-      <div class="boss-stage"><canvas width="288" height="112" aria-label="Boss relaxing at his executive desk"></canvas><span>EXECUTIVE OFFICE</span><i aria-hidden="true">✦</i></div>
+      <div class="boss-stage"><div class="boss-set"><canvas width="288" height="112" aria-label="Boss relaxing at his executive desk"></canvas><i aria-hidden="true"></i></div><span>EXECUTIVE OFFICE</span></div>
       <div class="boss-speaker"><b>Boss</b><span>Ideas guy</span><span data-count></span></div>
       <div class="boss-dialogue" aria-live="polite" aria-atomic="true">
         <p data-intro></p><article hidden><h2 data-title></h2>
@@ -75,7 +83,7 @@ export class BossCutscene {
   }
   private el<T extends HTMLElement = HTMLElement>(selector: string) { return this.root.querySelector<T>(selector)!; }
   async open(review: boolean) {
-    this.close(); const token = ++this.token;
+    this.shut(); const token = ++this.token;
     this.previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     this.agent = undefined; this.briefing = undefined; this.page = -1; this.started = Date.now();
     this.archiveView = false; this.nextReviewAt = undefined; this.el('[data-cadence]').textContent = 'New reviews per scope at most once every 24 hours.';
@@ -115,7 +123,7 @@ export class BossCutscene {
   }
   /** Open an archived search result without starting a review or polling the current agent. */
   openSaved(briefing: BossBriefing, idea = 0) {
-    this.close();
+    this.shut();
     this.previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     this.projectId = briefing.projectId ?? ''; this.populateProjects();
     this.agent = undefined; this.briefing = briefing; this.archiveView = false;
@@ -130,17 +138,46 @@ export class BossCutscene {
       if (token !== this.token) return;
       this.agent = result.agent ?? this.agent;
       this.nextReviewAt = result.nextReviewAt; this.cadence();
-      if (result.state === 'ready' && result.briefing) { this.projectId = result.briefing.projectId ?? ''; this.populateProjects(); this.briefing = result.briefing; this.page = -1; this.render(); return; }
+      if (result.state === 'ready' && result.briefing) {
+        this.projectId = result.briefing.projectId ?? ''; this.populateProjects(); this.briefing = result.briefing; this.page = -1; this.render();
+        // Notes that were already written just open. An answer that was waited for is a moment.
+        if (Date.now() - this.started > 1500) this.eureka();
+        return;
+      }
       const waiting = result.state === 'thinking' && Date.now() - this.started < 180_000;
       this.message(waiting ? result.message : result.state === 'thinking' ? 'I’m still working on my notes. You can come back to the briefing in a little while.' : result.message, waiting);
       if (waiting) this.timer = window.setTimeout(() => { void this.read(token); }, 1800);
     } catch (error) { if (token === this.token) this.message(`The briefing connection was interrupted. ${(error as Error).message}`, false); }
   }
+  /** The "!" over Boss's head and a chime, for the moment his answer comes in. */
+  private eureka() {
+    const mark = this.el('.boss-set > i');
+    audio.blip('ok');
+    mark.classList.add('idea');
+    window.setTimeout(() => mark.classList.remove('idea'), 900);
+  }
+  /** Boss says a short line a letter at a time, quickly. The whole line is in the page from the
+   *  start, so a screen reader and the tests read it once; only the ink is staggered. */
+  private say(text: string) {
+    const intro = this.el('[data-intro]');
+    if (intro.textContent === text) return;   // the briefing poll repeats the line he has just said
+    if (reducedMotion() || text.length > SPOKEN_MAX) { intro.textContent = text; return; }
+    const step = Math.min(18, SPOKEN_MS / text.length);
+    intro.replaceChildren(...[...text].map((letter, index) => {
+      const span = document.createElement('span');
+      span.textContent = letter; span.style.animationDuration = `${Math.round(index * step)}ms`;
+      return span;
+    }));
+  }
   private message(text: string, thinking: boolean) {
     this.archiveView = false; this.el('.boss-archive').hidden = true;
     this.root.dataset.thinking = String(thinking);
-    this.el('[data-intro]').hidden = false; this.el('[data-intro]').textContent = text;
-    this.el('article').hidden = true; this.el('[data-count]').textContent = thinking ? 'Thinking…' : '';
+    this.el('[data-intro]').hidden = false; this.say(text);
+    this.el('article').hidden = true;
+    // the dots keep their own time, so they are only drawn when the thinking starts
+    const count = this.el('[data-count]');
+    if (!thinking) count.textContent = '';
+    else if (!count.querySelector('.boss-dots')) count.innerHTML = 'Thinking<span class="boss-dots" aria-hidden="true"><i></i><i></i><i></i></span>';
     this.el('[data-progress]').replaceChildren(); this.el('[data-back]').hidden = true;
     this.el('[data-chat]').hidden = !this.agent;
     this.el('[data-check]').hidden = thinking || !this.agent;
@@ -160,7 +197,7 @@ export class BossCutscene {
     this.el('[data-check]').hidden = true;
     this.root.dataset.thinking = 'false';
     const intro = this.page < 0, idea = briefing.ideas[this.page];
-    this.el('[data-intro]').hidden = !intro; this.el('[data-intro]').textContent = briefing.intro;
+    this.el('[data-intro]').hidden = !intro; this.say(briefing.intro);
     this.el('article').hidden = intro;
     if (idea) {
       this.el('[data-title]').textContent = idea.title;
@@ -173,7 +210,8 @@ export class BossCutscene {
     }));
     this.el('[data-chat]').hidden = !this.agent;
     this.el('[data-back]').hidden = intro;
-    this.el('[data-next]').textContent = intro ? 'Let’s hear them →' : this.page === briefing.ideas.length - 1 ? 'Back to office ✓' : 'Next idea →';
+    if (!intro && this.page === briefing.ideas.length - 1) this.el('[data-next]').innerHTML = `Back to office ${studioIcon('check')}`;
+    else this.el('[data-next]').textContent = intro ? 'Let’s hear them' : 'Next idea';
     this.el('.boss-dialogue').scrollTop = 0;
     if (!matchMedia('(prefers-reduced-motion: reduce)').matches) this.el('.boss-dialogue').animate([{ opacity: 0, transform: 'translateY(5px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 160 });
   }
@@ -204,7 +242,7 @@ export class BossCutscene {
         button.append(date, title, detail); button.onclick = () => { this.briefing = briefing; this.page = -1; this.render(); this.el<HTMLButtonElement>('[data-next]').focus(); };
         return button;
       }));
-      this.el('[data-next]').textContent = result.cursor ? 'Older briefings →' : 'Back to office';
+      this.el('[data-next]').textContent = result.cursor ? 'Older briefings' : 'Back to office';
       this.el('[data-back]').hidden = !cursor; this.el('[data-back]').textContent = 'Newest';
       this.el('.boss-dialogue').scrollTop = 0;
     } catch (error) { if (token === this.token) this.el('[data-archive-summary]').textContent = `Couldn’t open the archive. ${(error as Error).message}`; }
@@ -236,6 +274,11 @@ export class BossCutscene {
     drawExecutiveDesk(pen); ctx.restore();
   }
   close() {
+    snapShut(this.el('.boss-window'));
+    this.shut();
+  }
+  /** Take the window away with no shutter, as when it reopens on another briefing. */
+  private shut() {
     ++this.token; clearTimeout(this.timer); this.controller?.abort(); this.root.remove();
     if (this.previousFocus?.isConnected) this.previousFocus.focus({ preventScroll: true });
     this.previousFocus = undefined;

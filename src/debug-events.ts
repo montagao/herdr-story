@@ -8,6 +8,7 @@ type Sample = Pick<MoneyEvent, 'kind' | 'amount' | 'label' | 'detail'> & {
 
 const SAMPLES: Sample[] = [
   { kind: 'sale', amount: 29, label: 'Preview only · successful payment', caption: 'Pay $29', tone: 'up' },
+  { kind: 'sale', amount: 250, label: 'Preview only · Studio plan, annual', caption: 'Pay $250', tone: 'up' },
   { kind: 'subscribed', amount: 0, label: 'Preview only · first invoice paid', caption: 'Paid sub', tone: 'up' },
   { kind: 'trial_started', amount: 0, label: 'Preview only · trial subscription', caption: 'Trial', tone: 'flat' },
   { kind: 'failed', amount: 29, label: 'Preview only · payment failed', caption: 'Fail $29', tone: 'down' },

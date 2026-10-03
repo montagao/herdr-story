@@ -38,13 +38,19 @@ try {
   page = await browser.newPage(); page.setDefaultTimeout(12000);
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(url); await ready(page);
+  await page.waitForFunction(() => window.hs.studio.moneyCache.size === 5 && !window.hs.studio.moneyPending.size);
   await page.evaluate(() => {
     const { studio, client } = window.hs;
     studio.recapSince = Date.now() - 3600_000;
+    studio.moneyCache.clear();
     studio.state.journalTotal = studio.state.journal.length + 1000;
     const call = client.call.bind(client);
     window.summaryRequests = [];
     client.call = async (method, params, ...args) => {
+      if (method === 'studio.journal' && !params.moneySummary && window.delayHistory) {
+        const result = await call(method, params, ...args);
+        return new Promise(resolve => { window.releaseHistory = () => resolve(result); });
+      }
       if (method !== 'studio.journal' || !params.moneySummary) return call(method, params, ...args);
       const result = await call(method, params, ...args);
       return new Promise((resolve, reject) => window.summaryRequests.push({
@@ -104,6 +110,16 @@ try {
   await settle(() => window.summaryRequests[7].missing());
   assert.doesNotMatch(await card.innerText(), /Converting/);
   assert.equal(await page.locator('[data-retry-recap]').isVisible(), true);
+  // The money can arrive before a slow journal page, and cached rolling periods
+  // retain their number even though the new cutoff differs by milliseconds.
+  await page.evaluate(() => { window.delayHistory = true; });
+  await page.locator('[data-recap-range="30d"]').click(); await pending(9);
+  assert.match(await card.innerText(), /62\.00/, 'Previously loaded period paints immediately');
+  await page.evaluate(() => window.summaryRequests[8].resolve(82));
+  await page.waitForFunction(() => document.querySelector('.recap-card').textContent.includes('82.00'));
+  assert.equal(await page.evaluate(() => window.hs.studio.historyLoading), true, 'Total does not wait for journal text');
+  await page.waitForFunction(() => !!window.releaseHistory);
+  await settle(() => window.releaseHistory());
   assert.deepEqual(errors, []);
-  console.log('PASS recap redraw, tab switch, close/reopen, timeout and retry, unavailable rates and missing summary');
+  console.log('PASS preload, immediate cached periods, total before slow history, recap redraw, tab switch, close/reopen, timeout and retry, unavailable rates and missing summary');
 } finally { await browser.close(); for (const child of children) await stop(child); }

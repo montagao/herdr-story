@@ -28,6 +28,7 @@
 // The last step watches the bridge instead of asking "did it work?": once the key is live the
 // window says so on its own.
 import { audio } from './audio';
+import { dismissOnBackdrop, snapShut } from './motion';
 import { closeOnEscape } from './escape';
 import { mountRevenueCatWebhook } from './revenuecat-webhook-setup';
 
@@ -70,7 +71,7 @@ export class BillingSetup {
   private choice: Provider = 'stripe';
 
   constructor() {
-    this.root?.addEventListener('click', (e) => { if (e.target === this.root) this.close(); });
+    if (this.root) dismissOnBackdrop(this.root, () => this.close());
     if (this.root) closeOnEscape(this.root, () => this.close());
   }
 
@@ -84,17 +85,16 @@ export class BillingSetup {
     this.choice = this.setup.stripe && !this.setup.revenuecat ? 'revenuecat' : 'stripe';
     this.render();
     this.root.hidden = false;
-    audio.play('open');
     this.watch = window.setInterval(() => void this.poll(), WATCH_MS);
   }
 
   close() {
     if (!this.root || this.root.hidden) return;
     this.stopWebhook?.();
+    snapShut(this.root.firstElementChild);
     this.root.hidden = true;
     this.root.innerHTML = '';
     if (this.watch) { clearInterval(this.watch); this.watch = undefined; }
-    audio.play('close');
   }
 
   /** Hand a pasted key to the bridge, which checks it with the provider before keeping it. */
@@ -132,7 +132,7 @@ export class BillingSetup {
         status.className = 'setup-status ok';
         status.textContent = `Connected. The office is on ${r.source === 'both' ? 'Stripe and RevenueCat' : r.source === 'revenuecat' ? 'RevenueCat' : 'Stripe'}.`;
         if (this.watch) { clearInterval(this.watch); this.watch = undefined; }
-        audio.play('done');
+        audio.play('party');
         this.onConnected?.();
       } else if (r.error) {
         status.className = 'setup-status bad';

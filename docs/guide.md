@@ -118,6 +118,11 @@ that directory for their source, license, and any modifications.
 - `src/scenes/OfficeScene.ts` draws the office. `?lab=1` opens a sprite lab for checking frame names and face offsets.
 - `src/feed/feed.ts` renders the timeline; post wording lives in the `T` table.
 - `src/audio.ts` plays the office music and maps game events to sampled effects after the first user interaction.
+  Long jingles are exclusive (a level-up may cut in over a ship fanfare; the music ducks under both), and
+  `audio.blip()` adds a few synthesised interface sounds in the music's key for presses, sends and arrivals.
+- `src/motion.ts` and `src/motion.css` hold the shared window motion: one observer lands every window, fades a
+  single dim sheet behind it, and plays its open and close sounds, while `hidden` still flips in the same task.
+  New motion should use the timing tokens there (`--pop-ms`, `--quick-ms`) so reduced motion covers it.
 - The bridge enriches agents with their exact runtime model from local Codex/Claude session metadata. It caches the
   result and checks active session tails periodically, so changing models does not require restarting the office.
 - **Model and effort:** hiring a Codex or Claude agent offers optional model and reasoning-effort choices. Blank

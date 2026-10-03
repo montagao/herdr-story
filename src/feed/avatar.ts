@@ -1,5 +1,5 @@
 // Draws a pixel avatar (face over body) into a small canvas for the DOM feed and dialog.
-import { BODY_POSE, FACE, FACE_H, FACE_W, lookFor } from '../sprites';
+import { BODY_POSE, FACE, FACE_H, FACE_W, lookFor, wearableBody } from '../sprites';
 
 const cache = new Map<string, Promise<HTMLImageElement>>();
 function img(src: string): Promise<HTMLImageElement> {
@@ -18,7 +18,7 @@ export function avatarCanvas(paneId: string, size = 44, custom?: { body: number;
   fallback.fillStyle = '#ece2c9'; fallback.fillRect(0, 0, 24, 24);
   fallback.fillStyle = '#514739'; fallback.font = 'bold 13px sans-serif'; fallback.textAlign = 'center';
   fallback.fillText(paneId.slice(-1).toUpperCase(), 12, 17);
-  const look = custom ?? lookFor(paneId);
+  const look = custom ? { body: wearableBody(custom.body), face: custom.face } : lookFor(paneId);
   Promise.all([img(`/assets/gds/body/body${look.body}.png`), img(`/assets/gds/face/face_${look.face}.png`)]).then(([b, f]) => {
     const ctx = c.getContext('2d')!; ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, 24, 24);

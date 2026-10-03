@@ -2,6 +2,8 @@ import type { PaymentDetails } from '../shared/payment-details';
 import type { OfficeClient } from './net/office-client';
 import { closeOnEscape } from './escape';
 import { studioIcon } from './icons';
+import { dismissOnBackdrop, snapShut } from './motion';
+import './hud.css';
 export type PaymentSummary = {id:string;source?:'stripe'|'revenuecat';title:string;at:number;amount?:number;currency?:string;url?:string};
 const esc=(value:unknown)=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const link=(url?:string)=>{try {const parsed=new URL(url!);return parsed.protocol==='https:' && ['dashboard.stripe.com','app.revenuecat.com'].includes(parsed.hostname)?parsed.href:'';}catch{return '';}};
@@ -15,16 +17,19 @@ export class PaymentWindow {
  constructor(private client:OfficeClient){
   this.root.id='payment-window';this.root.className='payment-window';this.root.hidden=true;this.root.setAttribute('aria-labelledby','payment-title');this.root.setAttribute('data-block-office-input','');
   document.body.append(this.root);closeOnEscape(this.root,()=>this.close());
-  this.root.addEventListener('click',event=>{if(event.target===this.root)this.close();});
+  dismissOnBackdrop(this.root,()=>this.close());
   this.root.addEventListener('cancel',event=>{event.preventDefault();this.close();});
  }
  get isOpen(){return this.root.open;}
- close(){this.generation++;this.root.close();this.root.hidden=true;this.root.innerHTML='';this.returnFocus?.focus({preventScroll:true});}
+ close(){this.generation++;if(this.root.open)snapShut(this.root);this.root.close();this.root.hidden=true;this.root.innerHTML='';this.returnFocus?.focus({preventScroll:true});}
  async open(summary:PaymentSummary,refresh=false){
   const generation=++this.generation;
   if(!this.root.open){this.returnFocus=document.activeElement as HTMLElement;this.root.hidden=false;this.root.showModal();}
   const source=summary.source==='revenuecat'?'RevenueCat':'Stripe';
-  this.root.innerHTML=`<header class="studio-header"><span class="studio-mark" aria-hidden="true">${studioIcon('coin',18)}</span><b>${source} · Payment details</b><button type="button" data-close-payment aria-label="Close payment details">×</button></header><div class="payment-paper"><small class="payment-kicker">THE STUDIO LEDGER</small><h2 id="payment-title">${esc(summary.title)}</h2><p class="payment-summary">${summary.amount!==undefined?`<b>${esc(money(summary.amount,summary.currency))}</b> · `:''}${esc(new Date(summary.at).toLocaleString())}</p><div data-payment-body aria-live="polite"><p>Loading customer and event details…</p></div></div>`;
+  // The journal row says "Payment · Trial converted · com.app.product"; the window's heading keeps
+  // the middle: the kind of payment. The verb is the window's title and the product gets a row.
+  const heading=summary.title.replace(/^(Payment|Refund|Dispute|Cancelled|Expired)\s*·\s*/i,'').replace(/\s*·\s*[a-z0-9]+(\.[a-z0-9_-]+){2,}\s*$/i,'')||summary.title;
+  this.root.innerHTML=`<header class="studio-header"><span class="studio-mark" aria-hidden="true">${studioIcon('coin',18)}</span><b>${source} · Payment details</b><button type="button" data-close-payment aria-label="Close payment details">×</button></header><div class="payment-paper"><small class="payment-kicker">THE STUDIO LEDGER</small><h2 id="payment-title">${esc(heading)}</h2><p class="payment-summary">${summary.amount!==undefined?`<b>${esc(money(summary.amount,summary.currency))}</b> · `:''}${esc(new Date(summary.at).toLocaleString())}</p><div data-payment-body aria-live="polite"><p class="payment-wait">Fetching the ledger<span class="load-dots" aria-hidden="true"><i></i><i></i><i></i></span></p></div></div>`;
   this.root.querySelector('[data-close-payment]')?.addEventListener('click',()=>this.close());
   if(!refresh)this.root.querySelector<HTMLButtonElement>('[data-close-payment]')?.focus();
   const body=this.root.querySelector<HTMLElement>('[data-payment-body]')!;
@@ -37,10 +42,28 @@ export class PaymentWindow {
    const cached=this.cache.get(summary.id);
    const detail=!refresh && cached && Date.now()-cached.at<60000?cached.detail:await fetchDetail();
    if(generation!==this.generation)return;
-   const customer=detail.customer, rows=[...(detail.status?[{label:'Status',value:detail.status}]:[]),...(detail.amount!==undefined?[{label:'Amount',value:money(detail.amount,detail.currency)}]:[]),...detail.fields,{label:'Event',value:detail.eventType || detail.eventId},{label:'Event ID',value:detail.eventId}];
-   for(const row of rows) if (['Purchased','Access expires','Access ends'].includes(row.label) && !Number.isNaN(Date.parse(row.value))) row.value=new Date(row.value).toLocaleString();
+   const customer=detail.customer;
+   // One fact, one place. The heading already says what was bought and the line under it the
+   // amount and time, so rows that repeat them are dropped; identifiers go in small type at the
+   // end, and an identifier equal to the one before it is not repeated.
+   const isId=(row:{label:string;value:string})=>/\b(id|transaction|identifier)\b|^subscription$/i.test(row.label);
+   const same=(a?:string,b?:string)=>!!a&&!!b&&a.trim().toLowerCase()===b.trim().toLowerCase();
+   const sameMoment=(a:number,b:number)=>Math.abs(a-b)<60_000;
+   const heading=this.root.querySelector<HTMLElement>('#payment-title')!, headed=heading.textContent??'';
+   const said=(value:string)=>same(value,headed)||headed.toLowerCase().includes(value.trim().toLowerCase());
+   // The status is often the journal title's own words ("Trial converted · com.app.starter"); a
+   // provider's one-word status ("succeeded", "canceled") is worth its row.
+   const statusSaid=!!detail.status&&(said(detail.status)||summary.title.toLowerCase().includes(detail.status.trim().toLowerCase()));
+   const rows=[...(detail.status&&!statusSaid?[{label:'Status',value:detail.status}]:[]),
+    ...(detail.amount!==undefined&&!(summary.amount!==undefined&&Math.abs(detail.amount-summary.amount)<0.005&&same(detail.currency??'usd',summary.currency??'usd'))?[{label:'Amount',value:money(detail.amount,detail.currency)}]:[]),
+    ...detail.fields.filter(row=>!(['Purchased','Paid','Created'].includes(row.label)&&!Number.isNaN(Date.parse(row.value))&&sameMoment(Date.parse(row.value),summary.at))&&!(row.label==='Environment'&&/^(production|live)$/i.test(row.value))),
+    ...(detail.eventType?[{label:'Event',value:detail.eventType.replace(/[._]/g,' ').toLowerCase().replace(/^./,c=>c.toUpperCase())}]:[])];
+   for(const row of rows) if (['Purchased','Access expires','Access ends','Paid','Created'].includes(row.label) && !Number.isNaN(Date.parse(row.value))) row.value=new Date(row.value).toLocaleString();
+   const facts=rows.filter(row=>!isId(row)&&!said(row.value)), ids=[...rows.filter(isId),{label:'Event ID',value:detail.eventId}];
+   const shownIds:{label:string;value:string}[]=[];
+   for(const row of ids) if(!shownIds.some(seen=>same(seen.value,row.value))) shownIds.push(row);
    const providerUrl=link(detail.url)||link(summary.url),customerUrl=link(customer?.url);
-   body.innerHTML=`<section class="payment-customer"><small>CUSTOMER</small><h3>${esc(customer?.name || 'Name not provided')}</h3>${customer?.email?`<p>${esc(customer.email)}</p>`:''}${customer?.phone?`<p>${esc(customer.phone)}</p>`:''}${customer?.id?`<p class="payment-id">${esc(customer.id)}</p>`:'<p>No customer identifier was saved with this event.</p>'}${customerUrl?`<a href="${esc(customerUrl)}" target="_blank" rel="noopener noreferrer">Open customer in ${source} ↗</a>`:''}</section><dl class="payment-fields">${rows.map(row=>`<div><dt>${esc(row.label)}</dt><dd>${esc(row.value)}</dd></div>`).join('')}</dl>${detail.note?`<p class="payment-note">${esc(detail.note)}</p>`:''}<footer class="payment-actions">${providerUrl?`<a href="${esc(providerUrl)}" target="_blank" rel="noopener noreferrer">Open in ${source} ↗</a>`:''}<button type="button" data-refresh-payment>Refresh details</button></footer>`;
+   body.innerHTML=`<section class="payment-customer"><small>CUSTOMER</small><h3>${esc(customer?.name || 'Name not provided')}</h3>${customer?.email?`<p>${esc(customer.email)}</p>`:''}${customer?.phone?`<p>${esc(customer.phone)}</p>`:''}${customer?.id?`<p class="payment-id">${esc(customer.id)}</p>`:'<p>No customer identifier was saved with this event.</p>'}${customerUrl?`<a href="${esc(customerUrl)}" target="_blank" rel="noopener noreferrer">Open customer in ${source} ↗</a>`:''}</section><dl class="payment-fields">${facts.map(row=>`<div><dt>${esc(row.label)}</dt><dd>${esc(row.value)}</dd></div>`).join('')}</dl>${shownIds.length?`<p class="payment-ids">${shownIds.map(row=>`<span><small>${esc(row.label)}</small>${esc(row.value)}</span>`).join('')}</p>`:''}${detail.note?`<p class="payment-note">${esc(detail.note)}</p>`:''}<footer class="payment-actions">${providerUrl?`<a href="${esc(providerUrl)}" target="_blank" rel="noopener noreferrer">Open in ${source} ↗</a>`:''}<button type="button" data-refresh-payment>Refresh details</button></footer>`;
    body.querySelector('[data-refresh-payment]')?.addEventListener('click',()=>void this.open(summary,true));
   }catch(error){
    if(generation!==this.generation)return;
