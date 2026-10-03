@@ -1,6 +1,6 @@
 // An isolated office for look-and-feel checks: how windows land, what animates, what sound plays.
 //
-//   node scripts/_feel-check.mjs <scenario.mjs> [--out <dir>] [--dist] [--static] [--viewport 1280x800] [--reduced-motion] [--keep-going]
+//   node scripts/_feel-check.mjs <scenario.mjs> [--out <dir>] [--dist] [--static] [--viewport 1280x800] [--reduced-motion] [--touch] [--keep-going]
 //
 // What it starts, all private to this run and torn down afterwards:
 //   * a MOCK bridge on a free port with a throwaway state dir (payment keys blanked, so nothing
@@ -91,7 +91,8 @@ const exe = process.env.PW_EXE || readdirSync(`${process.env.HOME}/.cache/ms-pla
   .map((d) => `${process.env.HOME}/.cache/ms-playwright/${d}/chrome-headless-shell-linux64/chrome-headless-shell`).pop();
 const browser = await chromium.launch({ executablePath: exe, args: ['--autoplay-policy=no-user-gesture-required'] });
 cleanup.push(async () => { try { await browser.close(); } catch {} });
-const context = await browser.newContext({ viewport: { width: vw, height: vh }, reducedMotion: flag('--reduced-motion') ? 'reduce' : 'no-preference' });
+// --touch emulates a phone's coarse, hover-less pointer, for rules behind (hover:none) / (pointer:coarse)
+const context = await browser.newContext({ viewport: { width: vw, height: vh }, reducedMotion: flag('--reduced-motion') ? 'reduce' : 'no-preference', hasTouch: flag('--touch'), isMobile: flag('--touch') });
 // Sound cannot be heard here, so every cue is logged instead: sampled cues (new Audio().play())
 // and synthesised ones (oscillators) both land in window.__audioLog with a page timestamp.
 await context.addInitScript(() => {

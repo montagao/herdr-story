@@ -94,3 +94,22 @@ body.offline #posts { filter:grayscale(.85); opacity:.75; }
   .status-lamp.blocked::after, body.offline .roster-live i, #posts img.roster-empty-fig { animation:none; }
   .agent-menu { transition:none; }
 }
+
+/* ---- under a finger ---- */
+/* A finger cannot hover, so on a touch screen the row's menu button is always there: a small
+   bevelled button with three square dots, where the chevron was. It used to sit invisible on top
+   of the chevron, so a tap there opened a menu nobody could see was offered. The row itself
+   still opens the conversation. */
+@media (hover:none), (pointer:coarse) {
+  .agent-entry.has-menu .agent-row { grid-template-columns:42px minmax(0,1fr) auto 40px; }
+  .agent-entry.has-menu .agent-open { visibility:hidden; }
+  .agent-entry.has-menu .agent-menu { opacity:1; right:6px; display:grid; place-items:center; width:38px; height:40px; border:1px solid #b3c6d6; border-bottom-width:3px; border-radius:3px; background:#f5fafd; font-size:0; }
+  .agent-entry.has-menu .agent-menu::before { content:''; width:3px; height:3px; background:#36596f; box-shadow:-6px 0 #36596f, 6px 0 #36596f; }
+  .agent-entry.has-menu .agent-menu:active { border-bottom-width:1px; background:#e6f0f7; }
+  .roster-menu button[role="menuitem"] { min-height:42px; }
+  .roster-menu-edit button { min-width:44px; min-height:40px; }
+}
+@media (max-width:820px) {
+  .project-head { grid-template-columns:40px minmax(0,1fr); min-height:40px; }
+  .project-collapse { padding:7px 12px; }
+}

@@ -59,7 +59,8 @@ html,body { margin:0; height:100%; background:#6ec6f2; color:var(--ink); font-fa
 .theme-card span { display:block; font-size:10px; color:var(--muted); margin-top:3px; text-align:center;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .theme-card[aria-current="true"] span { color:var(--ink); }
-@media (max-width:820px){ #theme-gallery { width:180px; grid-template-columns:repeat(2,1fr) } }
+/* three across on a phone: two across stood tall enough to run under the dock */
+@media (max-width:820px){ #theme-gallery { width:min(264px,calc(100vw - 20px)); grid-template-columns:repeat(3,1fr) } }
 /* The funds panel, on the game's own status bar. hud_bar.png is a three-slice cut from
    interface0: 10px caps either side of one repeating column, so border-image tiles it to whatever
    the number needs. The band is a smooth vertical gradient, so stretching its height is invisible. */
@@ -685,7 +686,17 @@ body.offline .roster-live i { background:#8da0b1; box-shadow:none; }
   #mute,#settings{padding:8px}
   .hire-win{max-height:100vh}.hire-form{grid-template-columns:1fr}.hire-field,.hire-placement,.hire-panel,.hire-task,.hire-actions{grid-column:1}
   .hire-placement{grid-template-columns:1fr}.hire-field input,.hire-field select,.hire-field textarea{font-size:16px}
-  .feed-tabs > *{padding:12px 0}
+  .feed-tabs > *{padding:9px 0}
+  #pinned{padding:5px 12px}
+  /* room for a finger on the header's tools, the status bar's gear and the theme button */
+  #hire-agent{min-height:40px;padding:8px 10px}
+  #mute,#settings{min-width:40px;min-height:40px;justify-content:center}
+  .hud-funds{grid-template-columns:16px auto 34px}
+  .hud-settings{width:34px;height:34px}
+  #theme-btn{min-width:42px;min-height:40px;justify-content:center}
+  /* 16px keeps iOS from zooming the page when one of these takes focus */
+  .roster-menu-edit input,.revenue-setting select,.setting select{font-size:16px}
+  .model-card span{font-size:10px}
 }
 
 /* debug pages (?lab=...) use the full window */
@@ -725,9 +736,9 @@ body.lab #feed { display:none; }
 #themer:is(:hover, .open) ~ #demo-launch { visibility:hidden; }
 /* Beside the theme button on a narrow screen too, and under it only when there is no room beside
    it. It used to be moved below, where the ticker's offset then put it squarely over the button. */
-@media (max-width:820px) { #demo-launch { left:56px; top:11px; } }
+@media (max-width:820px) { #demo-launch { left:60px; top:14px; } }
 @media (max-width:480px) { #demo-launch span { display:none; } }   /* "▶ demo": the funds bar needs the room */
-@media (max-width:350px) { #demo-launch { left:10px; top:50px; } }
+@media (max-width:350px) { #demo-launch { left:10px; top:58px; } }
 
 /* Conversation controls remain reachable while output and optional detail panes scroll. */
 .conversation-win .win-body { overflow:hidden; gap:6px; }
@@ -846,7 +857,6 @@ body.lab #feed { display:none; }
 .conversation-freshness { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; margin-bottom:6px; border:1px solid #b7cbd9; border-radius:4px; background:#edf5fa; color:#456278; font-size:12px; }
 .conversation-freshness[hidden] { display:none; }
 .conversation-freshness button { flex-shrink:0; border:0; padding:4px; background:transparent; color:#186e9f; font:inherit; text-decoration:underline; cursor:pointer; }
-@media (max-width:600px) { .conversation-freshness { align-items:flex-start; flex-direction:column; gap:4px; } }
 
 .agent-wait-notice { padding:12px 14px; margin-bottom:8px; border:1px solid #b77a20; border-left:4px solid #b77a20; border-radius:4px; background:#fff3cf; color:#70490e; font-size:13px; line-height:1.5; }
 .agent-wait-notice[hidden] { display:none; }

@@ -72,6 +72,11 @@
 .reception-totals button { display:flex; flex-direction:column; gap:4px; align-items:flex-start; padding:8px; text-align:left; }
 .reception-totals b { font-size:21px; font-weight:normal; }
 .reception-totals span { font-size:10px; }
+@media (max-width:820px) {
+  #front-desk { min-width:40px; min-height:40px; justify-content:center; padding:8px 10px; }
+  /* 16px keeps iOS from zooming the page on focus */
+  .reception-window :is(input,textarea,select) { font-size:16px; }
+}
 @media(max-width:600px) {
   #front-desk > span { display:none; }
   #reception { padding:8px; font-size:13px; }

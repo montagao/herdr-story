@@ -65,3 +65,14 @@ dialog.setup-win[open], dialog.attachment-viewer[open], dialog#payment-window[op
   .terminal-frame[data-stale]::after { animation:stale-in .1s steps(1) .35s both; }
   .pixel-switch::after, #theme-btn, .money-caret { transition:none; }
 }
+
+/* ---- under a finger ----
+   On a phone a window fills the screen and its close button is the only way out; these were a
+   bare 21 to 29px glyph in the corner. They get the conversation window's close: a small bevelled
+   button with room to hit. One selector that outranks each sheet's own, whichever loads last. */
+@media (max-width:820px), (pointer:coarse) {
+  :is(.studio-header, .reception-window, .cat-window, .cutscene-window) button[data-close] {
+    display:grid; place-items:center; flex:none; min-width:40px; height:36px; padding:0; border:1px solid #9bafc0; border-radius:3px;
+    background:linear-gradient(#fff,#dfe9f1); box-shadow:0 2px 0 #9bafc0; color:#2d4356; font-size:20px; line-height:1; }
+  :is(.studio-header, .reception-window, .cat-window, .cutscene-window) button[data-close]:active { transform:translateY(2px); box-shadow:none; }
+}
