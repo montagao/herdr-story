@@ -2,6 +2,8 @@ import type { PaymentDetails } from '../shared/payment-details';
 import type { OfficeClient } from './net/office-client';
 import { closeOnEscape } from './escape';
 import { studioIcon } from './icons';
+import { dismissOnBackdrop, snapShut } from './motion';
+import './hud.css';
 export type PaymentSummary = {id:string;source?:'stripe'|'revenuecat';title:string;at:number;amount?:number;currency?:string;url?:string};
 const esc=(value:unknown)=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const link=(url?:string)=>{try {const parsed=new URL(url!);return parsed.protocol==='https:' && ['dashboard.stripe.com','app.revenuecat.com'].includes(parsed.hostname)?parsed.href:'';}catch{return '';}};
@@ -15,11 +17,11 @@ export class PaymentWindow {
  constructor(private client:OfficeClient){
   this.root.id='payment-window';this.root.className='payment-window';this.root.hidden=true;this.root.setAttribute('aria-labelledby','payment-title');this.root.setAttribute('data-block-office-input','');
   document.body.append(this.root);closeOnEscape(this.root,()=>this.close());
-  this.root.addEventListener('click',event=>{if(event.target===this.root)this.close();});
+  dismissOnBackdrop(this.root,()=>this.close());
   this.root.addEventListener('cancel',event=>{event.preventDefault();this.close();});
  }
  get isOpen(){return this.root.open;}
- close(){this.generation++;this.root.close();this.root.hidden=true;this.root.innerHTML='';this.returnFocus?.focus({preventScroll:true});}
+ close(){this.generation++;if(this.root.open)snapShut(this.root);this.root.close();this.root.hidden=true;this.root.innerHTML='';this.returnFocus?.focus({preventScroll:true});}
  async open(summary:PaymentSummary,refresh=false){
   const generation=++this.generation;
   if(!this.root.open){this.returnFocus=document.activeElement as HTMLElement;this.root.hidden=false;this.root.showModal();}
@@ -27,7 +29,7 @@ export class PaymentWindow {
   // The journal row says "Payment · Trial converted · com.app.product"; the window's heading keeps
   // the middle: the kind of payment. The verb is the window's title and the product gets a row.
   const heading=summary.title.replace(/^(Payment|Refund|Dispute|Cancelled|Expired)\s*·\s*/i,'').replace(/\s*·\s*[a-z0-9]+(\.[a-z0-9_-]+){2,}\s*$/i,'')||summary.title;
-  this.root.innerHTML=`<header class="studio-header"><span class="studio-mark" aria-hidden="true">${studioIcon('coin',18)}</span><b>${source} · Payment details</b><button type="button" data-close-payment aria-label="Close payment details">×</button></header><div class="payment-paper"><small class="payment-kicker">THE STUDIO LEDGER</small><h2 id="payment-title">${esc(heading)}</h2><p class="payment-summary">${summary.amount!==undefined?`<b>${esc(money(summary.amount,summary.currency))}</b> · `:''}${esc(new Date(summary.at).toLocaleString())}</p><div data-payment-body aria-live="polite"><p>Loading customer and event details…</p></div></div>`;
+  this.root.innerHTML=`<header class="studio-header"><span class="studio-mark" aria-hidden="true">${studioIcon('coin',18)}</span><b>${source} · Payment details</b><button type="button" data-close-payment aria-label="Close payment details">×</button></header><div class="payment-paper"><small class="payment-kicker">THE STUDIO LEDGER</small><h2 id="payment-title">${esc(heading)}</h2><p class="payment-summary">${summary.amount!==undefined?`<b>${esc(money(summary.amount,summary.currency))}</b> · `:''}${esc(new Date(summary.at).toLocaleString())}</p><div data-payment-body aria-live="polite"><p class="payment-wait">Fetching the ledger<span class="load-dots" aria-hidden="true"><i></i><i></i><i></i></span></p></div></div>`;
   this.root.querySelector('[data-close-payment]')?.addEventListener('click',()=>this.close());
   if(!refresh)this.root.querySelector<HTMLButtonElement>('[data-close-payment]')?.focus();
   const body=this.root.querySelector<HTMLElement>('[data-payment-body]')!;

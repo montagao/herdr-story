@@ -16,6 +16,9 @@ import { closeOnEscape } from './escape';
 //     such so it is never mistaken for real revenue.
 import { audio } from './audio';
 import { gameCurrency } from './currency';
+import { hop } from './feed/feed';
+import { reducedMotion, replayAnimation, snapShut } from './motion';
+import './hud.css';
 import { REVENUE_RANGES, isRevenueRange, type RevenueRange } from '../shared/revenue-range';
 
 const POLL_MS = 60_000;
@@ -73,6 +76,14 @@ export class Hud {
   private staffEl?: HTMLElement;
   private staffNoteEl?: HTMLElement;
   private clockTimer?: number;
+  /** A gain that landed while the bar could not move, shown once it can. */
+  private owed = 0;
+  private cover?: MutationObserver;
+  private crew?: number;
+  /** Payments on their way to the till, each with the revenue read it arrived after. */
+  private awaited = new Map<string, number>();
+  /** Payments a later read has already taken into the total. */
+  private counted = new Set<string>();
 
   start() {
     if (!this.root) return;
@@ -102,6 +113,20 @@ export class Hud {
     this.staffEl = this.root.querySelector('.hud-staff')!;
     this.staffNoteEl = this.root.querySelector('.hud-staff-note')!;
     this.breakEl = this.root.querySelector('.hud-break')!;
+    // Each plays once; left on, the classes would replay them whenever the bar was redisplayed.
+    this.root.addEventListener('animationend', (event) => {
+      const el = event.target as HTMLElement;
+      if (event.animationName === 'hud-flash') el.classList.remove('flash');
+      if (event.animationName === 'hud-rise') { el.hidden = true; el.classList.remove('go'); }
+    });
+    // The office's animations stop while a window covers it or the tab is hidden, and main marks
+    // both on <html>. A flash is not left half-lit under the window, and a gain that lands
+    // meanwhile waits for the mark to lift.
+    this.cover = new MutationObserver(() => {
+      if (this.covered()) this.root?.querySelector('.hud-funds')?.classList.remove('flash');
+      else if (this.owed) this.pop(this.owed);
+    });
+    this.cover.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     this.root.hidden = false;
     this.clock();
     this.clockTimer = window.setInterval(() => this.clock(), CLOCK_MS);
@@ -114,6 +139,7 @@ export class Hud {
     this.stopSettingsEscape?.();
     this.settings?.close(); this.settings?.remove();
     this.request++;
+    this.cover?.disconnect();
     cancelAnimationFrame(this.animation);
     if (this.timer) clearInterval(this.timer);
     if (this.paymentTimer) clearTimeout(this.paymentTimer);
@@ -125,26 +151,45 @@ export class Hud {
     const now = new Date();
     const week = Math.floor((now.getDate() - 1) / 7) + 1;
     const label = `${MONTHS[now.getMonth()]} Wk${week}`;
-    if (this.dateEl) this.dateEl.textContent = label;
+    // This runs on every roster update, so nothing is written that has not changed.
+    const write = (el: HTMLElement | undefined, text: string) => { if (el && el.textContent !== text) el.textContent = text; };
+    write(this.dateEl, label);
     // the week rolling over while the office is open is news; the first tick is not
     if (this.weekLabel && this.weekLabel !== label) this.onWeek?.(label, this.weekLabel);
     this.weekLabel = label;
-    if (this.clockEl) {
-      const hh = String(now.getHours()).padStart(2, '0'), mm = String(now.getMinutes()).padStart(2, '0');
-      this.clockEl.textContent = `${DAYS[now.getDay()]} ${hh}:${mm}`;
-    }
+    const hh = String(now.getHours()).padStart(2, '0'), mm = String(now.getMinutes()).padStart(2, '0');
+    write(this.clockEl, `${DAYS[now.getDay()]} ${hh}:${mm}`);
     const crew = this.staff();
-    if (this.staffEl) this.staffEl.textContent = String(crew.total);
-    if (this.staffNoteEl) this.staffNoteEl.textContent = crew.working ? `${crew.working} working` : 'all idle';
+    write(this.staffEl, String(crew.total));
+    write(this.staffNoteEl, crew.working ? `${crew.working} working` : 'all idle');
+    // somebody clocked in or out: the head count hops
+    if (this.crew !== undefined && this.crew !== crew.total && !reducedMotion() && !this.covered()) this.staffEl?.animate(hop(3), { duration: 160 });
+    this.crew = crew.total;
   }
+
+  /** A payment has been announced and its customer is on the way to the till. The revenue poll
+   *  can land before they get there with the sale already in it; knowing which payments are
+   *  still walking lets credit() tell, instead of counting the sale twice. */
+  expect(id: string) { this.awaited.set(id, this.request); }
 
   /** A Stripe event just landed. The selected total it belongs to is only re-read once a minute, so
    *  move the number now — the next poll replaces it with Stripe's own figure either way. A cancelled
    *  subscription carries no amount and must not pretend to. */
-  credit(amount: number) {
+  credit(amount: number, id?: string) {
     if (!this.live || !amount) return;
+    if (id) this.awaited.delete(id);
+    // Already in the figure: the till still rings, but there is nothing to add.
+    if (id && this.counted.delete(id)) { if (amount > 0) this.pop(amount); return; }
+    // credit() is only called for Stripe's events, so the breakdown's Stripe line moves with the total
+    const stripe = this.parts.find((p) => p.source === 'stripe');
+    if (stripe) stripe.amount += amount;
     this.set(this.amount + amount, this.label);
+    this.breakdown();
   }
+
+  /** The till rang for money this bar cannot add up itself (a store sale, in another currency and
+   *  reported late): light the bar and hop the coin now, and let the next read bring the figure. */
+  ring() { if (!this.covered()) replayAnimation(this.root?.querySelector('.hud-funds'), 'flash'); }
 
   /** Store events can use a different currency or arrive late. Re-read the selected total. */
   refreshAfterPayment() {
@@ -191,7 +236,12 @@ export class Hud {
       this.live = true;
       this.currency = r.currency ?? 'usd';
       this.parts = r.parts ?? [];
-      this.set(r.amount, r.label ?? 'Stripe');
+      // A payment announced before this read was asked for is in its figure. The number moves
+      // now, quietly; the pop and the flash are kept for the till.
+      let early = false;
+      for (const [id, asked] of this.awaited) if (asked < request) { this.awaited.delete(id); this.counted.add(id); early = true; }
+      if (this.counted.size > 50) this.counted.clear();
+      this.set(r.amount, r.label ?? 'Stripe', early);
     } else {
       this.live = false;
       this.currency = 'usd';
@@ -250,7 +300,7 @@ export class Hud {
     dialog.querySelector('.revenue-settings-sources')!.textContent = this.parts.length
       ? this.parts.map(p => SOURCE_NAMES[p.source] ?? p.source).join(' · ')
       : 'Connect Stripe or RevenueCat to show your revenue here.';
-    const close = () => { dialog.close(); dialog.hidden = true; this.root?.querySelector<HTMLButtonElement>('.hud-settings')?.focus(); };
+    const close = () => { snapShut(dialog); dialog.close(); dialog.hidden = true; this.root?.querySelector<HTMLButtonElement>('.hud-settings')?.focus(); };
     dialog.querySelector('.setup-x')!.addEventListener('click', close);
     this.stopSettingsEscape = closeOnEscape(dialog, close);
     dialog.oncancel = event => { event.preventDefault(); close(); };
@@ -267,19 +317,19 @@ export class Hud {
       try { if (this.options.persistRange !== false) localStorage.setItem('herdr-revenue-range', this.range); } catch {}
       this.live = false; cancelAnimationFrame(this.animation); this.shown = undefined;
       this.amountEl!.textContent = '—'; this.labelEl!.textContent = 'Loading…';
-      this.breakEl!.hidden = true; this.popEl!.hidden = true;
+      this.breakEl!.hidden = true; this.popEl!.hidden = true; this.owed = 0;
       void this.refresh();
     });
     document.body.append(dialog);
     dialog.hidden = false; dialog.showModal(); select.focus();
   }
 
-  private set(amount: number, label: string) {
+  private set(amount: number, label: string, quiet = false) {
     const gain = this.shown === undefined ? 0 : amount - this.amount;
     this.amount = amount;
     this.label = label;
     if (this.labelEl) this.labelEl.textContent = this.rangeEl && !this.rangeEl.hidden ? label.split(' · ')[0] + ' ·' : label;
-    if (gain > 0) this.pop(gain);
+    if (gain > 0 && !quiet) this.pop(gain);
     this.countTo(amount);
   }
 
@@ -288,7 +338,7 @@ export class Hud {
     const el = this.amountEl;
     if (!el) return;
     cancelAnimationFrame(this.animation);
-    if (this.shown === undefined) { this.shown = target; el.textContent = this.money(target); return; }
+    if (this.shown === undefined || reducedMotion()) { this.shown = target; el.textContent = this.money(target); return; }
     const from = this.shown, start = performance.now(), ms = 700;
     const step = (now: number) => {
       const t = Math.min(1, (now - start) / ms);
@@ -300,17 +350,21 @@ export class Hud {
     this.animation = requestAnimationFrame(step);
   }
 
+  /** Whether the bar's animations are stopped: a window is over the office, or the tab is hidden. */
+  private covered() { return document.hidden || document.documentElement.classList.contains('office-obscured'); }
+
   private pop(gain: number) {
     const el = this.popEl;
     if (!el) return;
+    // Started behind a window, the flash would sit frozen on its first, solid gold frame until
+    // the window closed, and the rising figure would time out unseen. Keep it for the return.
+    if (this.covered()) { this.owed += gain; return; }
+    this.owed = 0;
     el.textContent = `+${this.money(gain)}`;
     el.hidden = false;
-    el.classList.remove('go');
-    void el.offsetWidth;          // restart the animation rather than letting it finish silently
-    el.classList.add('go');
-    const cell = this.root?.querySelector<HTMLElement>('.hud-funds');
-    if (cell) { cell.classList.remove('flash'); void cell.offsetWidth; cell.classList.add('flash'); }
-    audio.play('points');
+    replayAnimation(el, 'go');    // restart the animation rather than letting it finish silently
+    replayAnimation(this.root?.querySelector('.hud-funds'), 'flash');
+    audio.blip('coin');
     if (this.popTimer) clearTimeout(this.popTimer);
     this.popTimer = window.setTimeout(() => { el.hidden = true; }, 1800);
   }

@@ -1,0 +1,96 @@
+/* The roster's motion, and the few fixes to its layout that the motion needs. The roster's base
+   look is in style.css; these rules are written to win over it whichever sheet loads last.
+
+   Keyframes here stop while a window covers the office (style.css pauses everything inside #feed
+   then), so anything that has to finish is a transition or a Web Animation from feed.ts. */
+
+/* ---- the list ---- */
+/* A row walking in from the side must not call up a sideways scrollbar. */
+#posts { overflow-x:hidden; }
+/* Groups change places; the one that travels furthest is lifted over the rest for the trip. */
+#posts > section { position:relative; }
+/* A pinned heading stays above a row that is sliding beneath it or being pointed at. */
+#posts .project-head { z-index:4; }
+#posts .project-head:hover, #posts .project-head:focus-within { z-index:5; }
+
+/* ---- rows ---- */
+/* Paper of its own, so a row sliding over another covers it rather than showing through. */
+.agent-entry { background:#fbfcfd; }
+/* The row's menu button takes the chevron's place while the row is pointed at. It used to fade
+   in on top of the status chip, through the words that matter most. */
+.agent-entry.has-menu .agent-row { grid-template-columns:42px minmax(0,1fr) auto 24px; }
+.agent-entry.has-menu .agent-open { text-align:center; }
+.agent-entry.has-menu .agent-menu { right:10px; }
+.agent-entry.has-menu:hover .agent-open, .agent-entry.has-menu:focus-within .agent-open { visibility:hidden; }
+/* A long name gives way before the level badge does, and the handle before either. */
+.agent-line b { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-line .level-badge { flex:none; }
+.agent-line .agent-handle { flex:0 999 auto; }
+/* Rows and headings give under the finger, at once; the release eases back as a hover does. */
+#posts .agent-row:active { transform:translate(-2px,1px); background:#dcefff; transition-duration:0s; }
+.project-collapse:active, .project-focus:active, .money-head:active { transform:translateY(1px); }
+.agent-entry .agent-menu:active { transform:translateY(-50%) translateY(1px); }
+
+/* An agent waiting on you is the one row that must not sit still: a red rule down its edge and a
+   hard two-frame ring on its lamp. The lamp itself never animates; only this ring does. */
+#posts .agent-row.blocked { border-left-color:#e5484d; }
+.status-lamp.blocked::after { content:''; position:absolute; inset:-4px; border:2px solid #e5484d; border-radius:50%; pointer-events:none; animation:lamp-alert 1s steps(1) infinite; }
+@keyframes lamp-alert { 50% { opacity:0; } }
+
+/* Three pips in the level badge: tasks shipped toward the next level, in the badge's own ink. */
+.xp-pips { display:inline-flex; gap:1px; margin-left:4px; vertical-align:1px; }
+.xp-pips i { width:3px; height:6px; background:currentColor; opacity:.25; transform-origin:bottom; }
+.xp-pips i.on { opacity:1; }
+
+/* ---- headings ---- */
+/* One caret that turns, in two steps, instead of two glyphs swapped. */
+.project-toggle { display:inline-block; transition:transform var(--quick-ms) steps(2,end); }
+[aria-expanded="false"] > .project-toggle { transform:rotate(-90deg); }
+
+/* ---- the count strip and the tabs ---- */
+/* Red means somebody is waiting. With nobody waiting the chip is as quiet as the paper. */
+#pinned .st.blocked.quiet { background:#e6edf1; color:#6b7f8c; }
+.tab-count { display:inline-block; margin-left:6px; padding:0 5px; border-radius:2px; background:#e5484d; color:#fff; font-size:11px; line-height:15px; box-shadow:0 2px 0 #a8262b; vertical-align:1px; }
+.feed-tabs > [data-filter]:hover { background:#f2f7fa; }
+.feed-tabs > [data-filter]:focus-visible { outline-offset:-2px; }
+/* Each tab carries the marker, drawn in from the middle on the one that is chosen. A transition
+   rather than keyframes, so that it still lands while something has the office paused. */
+.feed-tabs > [data-filter] { position:relative; }
+.feed-tabs > [data-filter]::after { content:""; position:absolute; left:calc(50% - 28px); bottom:0; width:56px; height:4px; background:var(--blue); border-radius:2px;
+  transform:scaleX(0); transition:transform var(--quick-ms) steps(3,end); }
+.feed-tabs > .active::after { transform:none; }
+
+/* ---- the row menu ---- */
+/* It unrolls away from the row in three steps, shadow and all; closing is instant. */
+.roster-menu { animation:menu-in var(--quick-ms) steps(3,start); }
+.roster-menu[data-up] { animation-name:menu-up; }
+@keyframes menu-in { from { clip-path:inset(-2px -2px 100% -2px); } to { clip-path:inset(-2px -2px -5px -2px); } }
+@keyframes menu-up { from { clip-path:inset(100% -2px -5px -2px); } to { clip-path:inset(-2px -2px -5px -2px); } }
+.roster-menu-edit button:active { border-bottom-width:1px; margin-bottom:2px; }
+
+/* ---- payments ---- */
+/* A payment lands with the same pop as everything else, and money coming in glows till-gold for
+   a beat, as the funds panel does. */
+#posts .money-row.new { animation:money-in var(--pop-ms) var(--pop-ease); }
+#posts .money-row.new.up { animation:money-in var(--pop-ms) var(--pop-ease), money-gold 1.2s ease-out; }
+@keyframes money-gold { 0% { background:#ffe89a; } 30% { background:#fff4c4; } 100% { background:transparent; } }
+
+/* ---- nobody here ---- */
+/* The mascot, or a steel chip where the art pack is missing; either arrives with a little life
+   and then stands still, because this view can be on screen all day. */
+#posts .roster-empty-fig { display:grid; place-items:center; width:40px; height:40px; margin-bottom:10px; border:2px solid #7b8794; border-radius:3px; background:#f4f6f8; box-shadow:inset -3px -3px #cfdae3; color:#2d8650; animation:empty-in var(--pop-ms) var(--pop-ease); }
+#posts img.roster-empty-fig { width:42px; height:64px; border:0; border-radius:0; background:none; box-shadow:none; image-rendering:pixelated; animation:empty-hop .28s ease-in-out 4 alternate; }
+@keyframes empty-in { from { transform:scale(.6); } }
+@keyframes empty-hop { to { transform:translateY(-8px); } }
+
+/* ---- the bridge is gone ---- */
+/* The office goes grey when the bridge drops; the roster should not go on looking live. */
+body.offline .roster-live i { background:#c9553d; box-shadow:0 0 0 2px #f6d8d2; animation:lamp-alert 1s steps(1) infinite; }
+body.offline .roster-live::after { content:' · reconnecting'; }
+body.offline .status-lamp::after { animation:none; }
+body.offline #posts { filter:grayscale(.85); opacity:.75; }
+
+@media (prefers-reduced-motion:reduce) {
+  .status-lamp.blocked::after, body.offline .roster-live i, #posts img.roster-empty-fig { animation:none; }
+  .agent-menu { transition:none; }
+}

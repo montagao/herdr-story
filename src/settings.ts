@@ -74,6 +74,9 @@ export interface SettingsHooks {
   revenue?: () => void;
   /** Asks the browser for notification permission; resolves to whether it was granted. */
   askNotifications?: () => Promise<boolean>;
+  /** A control was moved. Sound is passed in rather than imported: this file is also loaded by
+   *  tests that have no browser, and the audio module needs one. */
+  cue?: () => void;
 }
 
 /** The office's settings window, in the same furniture as the revenue and Stripe windows. */
@@ -135,7 +138,9 @@ export class SettingsDialog {
       if (!input.name) return;
       if (input.name === 'hour') hint('hour')!.textContent = clockLabel(Number(input.value));
       if (input.name === 'music' || input.name === 'effects') hint(input.name)!.textContent = `${Math.round(Number(input.value) * 100)}%`;
-      if (input.type === 'range') this.settings.set({ [input.name]: Number(input.value) });
+      if (input.type === 'range') { fill(input as HTMLInputElement); this.settings.set({ [input.name]: Number(input.value) }); }
+      // the effects slider is the one control that cannot be heard working unless it says so
+      if (input.name === 'effects') this.hooks.cue?.();
     });
     dialog.addEventListener('change', async event => {
       const input = event.target as HTMLInputElement | HTMLSelectElement;
@@ -145,11 +150,16 @@ export class SettingsDialog {
       const box = input as HTMLInputElement;
       if (box.name === 'notifications' && box.checked) {
         const granted = await (this.hooks.askNotifications?.() ?? Promise.resolve(false));
-        if (!granted) { box.checked = false; return; }
+        // the browser said no; say why the switch went back rather than leaving it to be guessed
+        if (!granted) { box.checked = false; const why = box.closest('.setting')?.querySelector('small'); if (why) why.textContent = 'Blocked by the browser. Allow notifications for this site, then flip this again.'; return; }
       }
       this.settings.set({ [box.name]: box.checked });
+      this.hooks.cue?.();
       if (box.name === 'followDay') dialog.querySelector<HTMLElement>('[data-hint-for="hour"]')!.closest<HTMLElement>('.setting')!.hidden = box.checked;
     });
+    // The sliders are drawn as the game's striped bars; the filled length is theirs to report.
+    const fill = (input: HTMLInputElement) => { const min = Number(input.min), max = Number(input.max); input.style.setProperty('--fill', `${max > min ? ((Number(input.value) - min) / (max - min)) * 100 : 0}%`); };
+    dialog.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach(fill);
     document.body.append(dialog);
     dialog.hidden = false; dialog.showModal();
     dialog.querySelector<HTMLElement>('.setup-x')?.blur();

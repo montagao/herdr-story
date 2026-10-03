@@ -5,6 +5,7 @@ import { taskOf, type AgentInfo } from '../shared/types';
 import { studioIcon } from './icons';
 import { renderMarkdown } from './markdown';
 import './sweep.css';
+import { dismissOnBackdrop, reducedMotion, snapShut } from './motion';
 import { closeOnEscape } from './escape';
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -14,7 +15,8 @@ const age = (at: number, now: number) => {
 };
 const countLabel = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 interface Options {
-  janitorPortrait?(): HTMLElement | undefined;
+  /** Gus standing, or one of the eight frames of his sweep. */
+  janitorPortrait?(sweep?: number): HTMLElement | undefined;
   writable(): boolean; beforeOpen(): void; onJournal(): void; onTalk(paneId: string): void;
   onDepartures(agents: AgentInfo[]): Promise<void>;
 }
@@ -31,12 +33,15 @@ export class Sweep {
   private error = '';
   private request = 0;
   private returnFocus?: HTMLElement;
+  private sweeping?: number;
+  /** A control that had focus when a scan disabled it, to be given focus back when it returns. */
+  private held?: [key: string, value: string | undefined];
   constructor(private client: OfficeClient, private options: Options) {
     this.root.id = 'sweep-panel'; this.root.hidden = true;
     this.root.setAttribute('role', 'dialog'); this.root.setAttribute('aria-modal', 'true');
     this.root.setAttribute('aria-label', 'Re-org the office'); this.root.setAttribute('data-block-office-input', '');
     document.body.append(this.root);
-    this.root.addEventListener('click', event => { if (event.target === this.root) this.close(); });
+    dismissOnBackdrop(this.root, () => this.close());
     closeOnEscape(this.root, () => this.close());
     this.root.addEventListener('keydown', event => {
       if (event.key !== 'Tab') return;
@@ -51,12 +56,22 @@ export class Sweep {
   open() {
     this.returnFocus = document.activeElement as HTMLElement; this.options.beforeOpen();
     if (this.walking) return;
-    this.root.hidden = false; this.review = undefined; this.result = undefined; this.selected.clear();
+    this.root.hidden = false; this.review = undefined; this.result = undefined; this.selected.clear(); this.held = undefined;
     void this.load();
   }
   close() {
     if (!this.isOpen || this.loading === 'Saving recaps…') return;
-    this.root.hidden = true; this.request++; this.returnFocus?.focus({ preventScroll: true });
+    snapShut(this.root.firstElementChild); this.root.hidden = true; this.request++; this.returnFocus?.focus({ preventScroll: true });
+    this.sweepGus();
+  }
+  /** While the office is being checked Gus sweeps, at the pace he keeps on the floor. */
+  private sweepGus() {
+    if (!this.loading || !this.isOpen || reducedMotion()) { clearInterval(this.sweeping); this.sweeping = undefined; return; }
+    let step = 0;
+    this.sweeping ??= window.setInterval(() => {
+      const host = this.root.querySelector('[data-gus-portrait]'), frame = host && this.options.janitorPortrait?.(step++);
+      if (frame) host.replaceChildren(frame);
+    }, 220);
   }
   private async run<T>(label: string, method: string, params: Record<string, unknown>, apply: (result: T) => void) {
     const request = ++this.request;
@@ -80,12 +95,18 @@ export class Sweep {
     const focused = this.root.contains(document.activeElement) ? document.activeElement as HTMLElement : undefined;
     const focusKey = focused && ['agent', 'workspace', 'minutes', 'selectAll'].find(key => key in focused.dataset);
     const focusValue = focusKey ? focused!.dataset[focusKey] : undefined;
+    if (focusKey) this.held = [focusKey, focusValue];
+    else if (focused && !focused.classList.contains('sweep-window')) this.held = undefined;
     const saving = this.loading === 'Saving recaps…';
-    this.root.innerHTML = `<div class="studio-window sweep-window" tabindex="-1"><header class="studio-header"><span class="studio-mark" aria-hidden="true">${studioIcon('sweep', 18)}</span><b>Re-org the office</b><small>${this.options.writable() ? '' : 'read only'}</small><button type="button" data-close aria-label="Close Re-org" ${saving ? 'disabled' : ''}>×</button></header>
+    // One window for the whole visit. A scan paints twice, and a window replaced in between would
+    // start its landing over and drop the focus it was given.
+    let win = this.root.querySelector<HTMLElement>('.sweep-window');
+    if (!win) { win = document.createElement('div'); win.className = 'studio-window sweep-window'; win.tabIndex = -1; this.root.replaceChildren(win); }
+    win.innerHTML = `<header class="studio-header"><span class="studio-mark" aria-hidden="true">${studioIcon('sweep', 18)}</span><b>Re-org the office</b><small>${this.options.writable() ? '' : 'read only'}</small><button type="button" data-close aria-label="Close Re-org" ${saving ? 'disabled' : ''}>×</button></header>
       <div class="sweep-steps" aria-label="Re-org progress"><span class="${!this.review && !this.result ? 'current' : ''}">1 · Find idle desks</span><span class="${this.review && !this.result ? 'current' : ''}">2 · Review recaps</span><span class="${this.result ? 'current' : ''}">3 · Save & clear</span></div>
       <div class="studio-content">${this.result ? this.resultContent() : this.review ? this.reviewContent() : this.scanContent()}</div>
       <div class="sweep-status ${this.error ? 'error' : ''}" role="${this.error ? 'alert' : 'status'}">${esc(this.error || this.loading)}</div>
-      <footer class="sweep-actions">${this.actions()}</footer></div>`;
+      <footer class="sweep-actions">${this.actions()}</footer>`;
     const portrait = this.options.janitorPortrait?.();
     if (portrait) this.root.querySelector('[data-gus-portrait]')?.append(portrait);
     this.root.querySelector('.studio-content')!.scrollTop = scroll;
@@ -116,10 +137,14 @@ export class Sweep {
         if (result.closed.length) this.showDeparture(result);
       });
     }));
-    if (this.loading) this.root.querySelector('.studio-window')?.setAttribute('aria-busy', 'true');
-    // Keep keyboard focus after a filter/selection causes a redraw.
-    if (focusKey) [...this.root.querySelectorAll<HTMLElement>('button,input')].find(el => el.dataset[focusKey] === focusValue && !(el as HTMLButtonElement).disabled)?.focus({ preventScroll: true });
-    if (this.isOpen && !this.root.contains(document.activeElement)) this.root.querySelector<HTMLElement>('.studio-window')?.focus({ preventScroll: true });
+    if (this.loading) win.setAttribute('aria-busy', 'true'); else win.removeAttribute('aria-busy');
+    // Keep keyboard focus after a filter/selection causes a redraw. A scan disables its own chip
+    // while it runs, so the chip is remembered until it can take focus again.
+    const [key, value] = this.held ?? [];
+    const again = key ? [...this.root.querySelectorAll<HTMLElement>('button,input')].find(el => el.dataset[key] === value && !(el as HTMLButtonElement).disabled) : undefined;
+    if (again) { again.focus({ preventScroll: true }); this.held = undefined; }
+    if (this.isOpen && !this.root.contains(document.activeElement)) win.focus({ preventScroll: true });
+    this.sweepGus();
   }
   private showDeparture(result: SweepResult) {
     this.root.hidden = true; this.walking = true;
@@ -153,7 +178,7 @@ export class Sweep {
   }
   private resultContent() {
     const result = this.result!;
-    return `<div class="sweep-complete"><i aria-hidden="true">${studioIcon('journal', 36)}</i><h2>${countLabel(result.saved.length, 'recap')} saved to the Journal</h2><p>${result.closed.length ? `${countLabel(result.closed.length, 'agent')} closed${result.closedWorkspaces.length ? ` · ${countLabel(result.closedWorkspaces.length, 'workspace')} closed` : ''}.` : result.kept.length ? 'Some agents need another check; see below.' : 'Your agents are still open.'}</p></div>
+    return `<div class="sweep-complete"><div class="sweep-gus" data-gus-portrait></div><p class="sweep-signoff">${result.closed.length ? '“Desks are clear. Their notes are in the cabinet.”' : '“Their notes are in the cabinet. The desks stay as they are.”'}</p><h2>${countLabel(result.saved.length, 'recap')} saved to the Journal</h2><p>${result.closed.length ? `${countLabel(result.closed.length, 'agent')} closed${result.closedWorkspaces.length ? ` · ${countLabel(result.closedWorkspaces.length, 'workspace')} closed` : ''}.` : result.kept.length ? 'Some agents need another check; see below.' : 'Your agents are still open.'}</p></div>
       ${result.kept.length ? `<section class="sweep-kept"><h3>Needs review</h3>${result.kept.map(item => `<p><code>${esc(item.paneId)}</code> · ${esc(item.reason)}</p>`).join('')}</section>` : ''}<p>Find the saved prompts, findings, artifact references, and session IDs under “Re-org” in the Journal.</p>`;
   }
   private actions() {

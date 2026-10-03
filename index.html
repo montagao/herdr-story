@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/src/style.css" />
 <link rel="stylesheet" href="/src/studio.css" />
+<link rel="stylesheet" href="/src/motion.css" />
 </head>
 <body>
 <div id="app">
@@ -34,6 +35,13 @@
 <div id="boot-error" hidden></div>
 <script>
 window.__herdrReady = false;
+// One of a few tips, chosen before the first paint so the line never changes under the reader.
+(function () {
+  var tips = ['click any desk to talk to the agent sitting there', 'press T to redecorate the office', 'the arrow keys pan the office',
+    'the front desk knows who is waiting on you', 'right-click a roster row for more', 'Tab queues a prompt for later', 'pet Miso. It helps.'];
+  var note = document.querySelector('#loading [data-note]');
+  if (note) note.textContent = 'Tip · ' + tips[Math.floor(Math.random() * tips.length)];
+})();
 function showBootError(reason) {
   const box = document.getElementById('boot-error');
   box.hidden = false;

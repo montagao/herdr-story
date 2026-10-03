@@ -13,4 +13,7 @@
 .cutscene-caption { display:flex; flex-shrink:0; flex-direction:column; gap:3px; padding:9px 14px 11px; }
 .cutscene-caption b { font-weight:normal; font-size:15px; overflow-wrap:anywhere; }
 .cutscene-caption span { font-size:12px; color:#647b8c; overflow-wrap:anywhere; }
+/* A scene that builds up to its ending keeps the caption back until it gets there. */
+.cutscene-caption > * { transition:opacity var(--quick-ms) steps(2,end); }
+.cutscene-caption.held > * { opacity:0; }
 @media (prefers-reduced-motion: reduce) { .cutscene-window { animation:none; } }

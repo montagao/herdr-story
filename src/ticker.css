@@ -4,20 +4,36 @@
   border:0 solid transparent; border-left-width:10px; border-right-width:10px; border-image:url(/assets/gds/ui/hud_bar.png) 0 10 fill repeat; image-rendering:pixelated;
   box-shadow:0 2px 0 rgba(20,50,75,.22); }
 #sales-ticker[hidden] { display:none; }
-#game.has-ticker #themer, #game.has-ticker #hud, #game.has-ticker #demo-launch, #game.has-ticker #demo-badge { top:34px; }
+/* only where the band is shown: a phone has no band, and nothing there needs to step down */
+@media (min-width:701px) { #game.has-ticker #themer, #game.has-ticker #hud, #game.has-ticker #demo-launch, #game.has-ticker #demo-badge { top:34px; } }
 .ticker-total { flex:none; display:flex; align-items:baseline; gap:6px; padding-right:10px; margin-right:8px; border-right:1px solid #b3bcd0; font-size:13px; font-weight:normal; color:#136c34; white-space:nowrap; }
 .ticker-total span { font-size:9px; letter-spacing:.12em; color:#5d7285; }
+.ticker-figure { font-style:normal; }
 .ticker-window { flex:1; min-width:0; overflow:hidden; mask-image:linear-gradient(90deg, transparent, #000 3%, #000 97%, transparent); -webkit-mask-image:linear-gradient(90deg, transparent, #000 3%, #000 97%, transparent); }
 .ticker-track { display:inline-flex; white-space:nowrap; animation:ticker-run linear infinite; }
 .ticker-window:hover .ticker-track { animation-play-state:paused; }
+/* A line short enough to fit is shown once and stands still; ticker.ts decides. */
+.ticker-track.still { animation:none; }
+/* and its first letters are not left under the fade that the crawl comes out of */
+.ticker-window:has(> .still) { mask-image:none; -webkit-mask-image:none; }
 .ticker-run { display:inline-flex; align-items:center; padding-right:36px; }
+.ticker-run[hidden] { display:none; }
 .ticker-item { font-size:11px; color:#2b4152; }
 .ticker-item b { font-weight:normal; }
 .ticker-item.tone-up b { color:#136c34; }
 .ticker-item.tone-down b { color:#a1281f; }
 .ticker-item.tone-flat b { color:#245f82; }
 .ticker-item i { font-style:normal; color:#7a8d9b; font-size:9px; margin-left:3px; }
+/* a sale that has just come in: its amount blinks till-gold for a few seconds */
+.ticker-item.fresh b { animation:ticker-new .5s steps(1) 6; }
+@keyframes ticker-new { 50% { color:#b8860b; } }
 .ticker-dot { margin:0 12px; color:#b3bcd0; font-size:7px; }
 @keyframes ticker-run { from { transform:translateX(0); } to { transform:translateX(-50%); } }
-@media (prefers-reduced-motion: reduce) { .ticker-track { animation:none; } }
-@media (max-width:700px) { #sales-ticker { display:none; } #game.has-ticker #themer, #game.has-ticker #hud, #game.has-ticker #demo-launch, #game.has-ticker #demo-badge { top:10px; } }
+/* The first sale of the day brings the band down from the top edge, and the controls beneath
+   step down with it rather than jumping. Not on a phone, where the band is not shown. */
+@media (min-width:701px) {
+  #sales-ticker, #game.has-ticker :is(#themer, #hud, #demo-launch, #demo-badge) { animation:ticker-drop var(--pop-ms) steps(3,end); }
+}
+@keyframes ticker-drop { from { transform:translateY(-24px); } }
+@media (prefers-reduced-motion: reduce) { .ticker-track, .ticker-item.fresh b { animation:none; } }
+@media (max-width:700px) { #sales-ticker { display:none; } }

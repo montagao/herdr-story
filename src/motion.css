@@ -1,0 +1,67 @@
+/* One vocabulary for how the office's windows and controls move, so a new one does not have to
+   invent its own. The floor already speaks it: a speech bubble scales in over 120ms with a little
+   overshoot (scenes/bubble.ts), and that is the pop everything here lands with. Short and a touch
+   bouncy, never a fade you can watch.
+
+   Reduced motion collapses every duration to nothing rather than switching rules off one by one,
+   so anything built on these tokens is covered without thinking about it. */
+:root {
+  --pop-ms:120ms;                                 /* things that land: windows, menus, cards, badges */
+  --pop-ease:cubic-bezier(.34,1.56,.64,1);        /* Back.out */
+  --quick-ms:90ms;                                /* hover, press, a tab's marker */
+  --glide-ease:cubic-bezier(.2,.8,.2,1);          /* things that travel: rows, bars, drawers */
+  --veil-in:110ms; --veil-out:170ms;
+  --focus-ring:#f5c94b;
+}
+@media (prefers-reduced-motion:reduce) {
+  :root { --pop-ms:1ms; --quick-ms:1ms; --veil-in:1ms; --veil-out:1ms; }
+}
+
+/* ---- windows land ----
+   motion.ts puts .win-enter on a window's root for a moment when the root becomes visible, and
+   never when the window only repaints itself (a tab, another agent's chat). Transform only: the
+   words are readable on the first frame. Small screens show windows as full sheets, which rise
+   into place without the squeeze. */
+:root { --win-from:translateY(10px) scale(.96); }
+@media (max-width:820px) { :root { --win-from:translateY(12px); } }
+/* One animation name at every width, with only its starting pose varying: a second name behind a
+   media query would start the landing over again if the window were resized while it was arriving. */
+@keyframes win-in { from { transform:var(--win-from); } }
+body > .win-enter > :first-child,
+dialog.setup-win[open], dialog.attachment-viewer[open], dialog#payment-window[open] { animation:win-in var(--pop-ms) var(--pop-ease) both; }
+
+/* ---- the veil ----
+   The dim sheet behind whichever window is up. motion.ts takes each root's own backdrop colour
+   and gives it to this one sheet, which fades in with the window and out after it, and cross-fades
+   between two windows' darknesses when one hands over to the other. */
+#veil { position:fixed; inset:0; z-index:9; pointer-events:none; opacity:0; background-color:rgba(12,28,42,.36);
+  transition:opacity var(--veil-out) linear, background-color var(--veil-out) linear; }
+#veil.on { opacity:1; transition-duration:var(--veil-in), var(--veil-out); }
+
+/* ---- windows leave ----
+   The stand-in motion.ts leaves where a window stood, for the moment it takes to snap shut. */
+.win-ghost { position:fixed; margin:0; box-sizing:border-box; pointer-events:none; transform-origin:50% 50%; }
+
+/* ---- buttons press ----
+   The game's buttons have a thick bottom edge that flattens under the finger. These are the
+   families that were drawn with the edge but did not move; each sheet flattens its own edge to
+   match. Zero specificity, so a sheet's own :hover and :disabled rules still decide. */
+:where(#front-desk, .reception-window button:not([data-close]), .cat-window button, .boss-window button:not([data-close]),
+  #replay-controls button, .hire-actions button, .payment-actions button, #demo-launch, .roster-menu-edit button,
+  .setting-button, .revenue-sources-button, .setup-tab, .setup-copy button, .setup-paste button, .setup-go,
+  #studio-dock button, .theme-card):active:not(:disabled) { transform:translateY(2px); }
+.feed-tabs > button:hover { color:var(--ink); }
+:where(.feed-tabs > button, .roster-menu button[role="menuitem"]):active:not(:disabled) { transform:translateY(1px); }
+
+/* One focus ring where a control had only the browser's. */
+:where(button, a, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
+
+/* ---- reduced motion ----
+   The older keyframes that were written before the tokens and sat outside every reduced-motion
+   rule: the party card, the funds pop, a new sales row, the stale-screen blink. */
+@media (prefers-reduced-motion:reduce) {
+  #party .party-win, #party .party-sky, #party .party-fig, #party .party-trophy, #party .payday-coin,
+  .hud-pop.go, .hud-funds.flash, .money-row.new, .money-detail { animation:none !important; }
+  .terminal-frame[data-stale]::after { animation:stale-in .1s steps(1) .35s both; }
+  .pixel-switch::after, #theme-btn, .money-caret { transition:none; }
+}

@@ -12,6 +12,8 @@ export function paintCat(c: CanvasRenderingContext2D, pose: CatPose = 'stand', s
     r(edge, 4, 10, 1, 3); r(edge, 4, 11, 2, 3); r(edge, 10, 10, 1, 3); r(edge, 9, 11, 2, 3); r(fur, 5, 12, 6, 5);
     r(cream, 5, 16, 5, 2); r(edge, 5, 14, 2, 1); r(edge, 9, 14, 2, 1);
     r(edge, 14, 15, 7, 3); r(light, 13, 15, 7, 2); r(light, 11, 17, 4, 1);
+    // Breathing in: the back rises one pixel behind the head, and settles on the other frame.
+    if (step % 2) { r(edge, 12, 10, 5, 1); r(light, 12, 11, 5, 1); }
     return;
   }
   const bob = pose === 'walk' ? step % 2 : 0;
@@ -33,4 +35,15 @@ export function paintCat(c: CanvasRenderingContext2D, pose: CatPose = 'stand', s
   r(edge, 5 + stride, 17, 3, 3); r(edge, 14 - stride, 17, 3, 3);
   r(cream, 5 + stride, 19, 3, 1); r(cream, 14 - stride, 19, 3, 1);
   c.restore();
+}
+
+/** The five-pixel heart a pet earns: bare over the portrait, rimmed for the floor's carpets. */
+export function paintHeart(c: CanvasRenderingContext2D, x = 0, y = 0, rim = '') {
+  const heart = (color: string, dx: number, dy: number) => {
+    c.fillStyle = color;
+    c.fillRect(x + dx, y + dy, 2, 2); c.fillRect(x + dx + 3, y + dy, 2, 2); c.fillRect(x + dx, y + dy + 2, 5, 1);
+    c.fillRect(x + dx + 1, y + dy + 3, 3, 1); c.fillRect(x + dx + 2, y + dy + 4, 1, 1);
+  };
+  if (rim) for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) heart(rim, dx, dy);
+  heart('#bc6a68', 0, 0);
 }

@@ -18,14 +18,22 @@ export class Loading {
   private note = this.root?.querySelector<HTMLElement>('[data-note]') ?? null;
   private slow?: number;
   private finished = false;
+  private reached = -1;
+  /** The card has gone and the room is the whole picture. */
+  onGone?: () => void;
   constructor() {
     // A bridge that never answers should say so, not spin forever.
     this.slow = window.setTimeout(() => this.setNote('Still waiting for the bridge · is `npm run dev` running?'), 12_000);
   }
   step(step: LoadStep, text: string) {
     if (this.finished || !this.root) return;
+    // The bridge usually answers before the room is up, so the steps can arrive out of order;
+    // a bar that runs backwards reads as something going wrong.
+    const index = STEPS.indexOf(step);
+    if (index < this.reached) return;
+    this.reached = index;
     if (this.status) this.status.textContent = text;
-    if (this.bar) this.bar.style.width = `${Math.round(((STEPS.indexOf(step) + 1) / (STEPS.length + 1)) * 100)}%`;
+    if (this.bar) this.bar.style.width = `${Math.round(((index + 1) / (STEPS.length + 1)) * 100)}%`;
   }
   setNote(text: string) { clearTimeout(this.slow); if (this.note) this.note.textContent = text; }
   fail(message: string) {
@@ -35,15 +43,20 @@ export class Loading {
     if (this.status) this.status.textContent = 'Could not open the office';
     this.setNote(message);
   }
-  /** Fill the bar, say hello, and fade the card away over the finished office. */
+  /** Fill the bar, say hello, and raise the card off the finished office like a shop's shutter. */
   finish(agents: number) {
     if (this.finished || !this.root) return;
     this.finished = true; clearTimeout(this.slow);
     if (this.status) this.status.textContent = agents ? `${agents} ${agents === 1 ? 'agent is' : 'agents are'} at their desks` : 'The office is open';
     if (this.bar) this.bar.style.width = '100%';
     const root = this.root;
-    const away = () => { root.hidden = true; root.classList.remove('leaving'); };
+    const away = () => { if (root.hidden) return; root.hidden = true; root.classList.remove('leaving'); this.onGone?.(); };
     if (matchMedia('(prefers-reduced-motion: reduce)').matches) { away(); return; }
-    window.setTimeout(() => { root.classList.add('leaving'); root.addEventListener('transitionend', away, { once: true }); window.setTimeout(away, 900); }, 500);
+    window.setTimeout(() => {
+      root.classList.add('leaving');
+      // only the card's own shutter ends it: the bar inside has a transition of its own
+      root.addEventListener('transitionend', (event) => { if (event.target === root && event.propertyName === 'clip-path') away(); });
+      window.setTimeout(away, 900);
+    }, 500);
   }
 }

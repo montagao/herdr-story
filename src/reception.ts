@@ -6,6 +6,7 @@ import type { OfficeClient } from './net/office-client';
 import { closeOnEscape } from './escape';
 import { attentionAgents, findReceptionAgents, matchesReception, receptionProjects, taskAgents, visitStart } from './reception-data';
 import './reception.css';
+import { replayAnimation, snapShut } from './motion';
 
 type View = 'attention' | 'task' | 'recap' | 'search';
 type RecapKind = 'task' | 'milestone' | 'release' | 'sale';
@@ -110,12 +111,23 @@ export class Reception {
     });
     this.sync();
   }
+  private lastCount?: number;
+  /** What the receptionists say as you walk up: the hour, and who is waiting. */
+  private greeting() {
+    const waiting = this.lastCount ?? 0, hour = new Date().getHours();
+    if (waiting) return `${waiting === 1 ? 'Someone is' : `${waiting} people are`} waiting for you.`;
+    if (hour >= 22 || hour < 5) return 'Working late? All quiet here.';
+    return `${hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'}. How can I help?`;
+  }
   open() {
     this.previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     this.options.beforeOpen(); this.root.hidden = false; this.show('attention');
+    if (this.lastCount) replayAnimation(this.root.querySelector('header svg'), 'ring');
+    this.root.querySelector('.reception-welcome p')!.textContent = this.greeting();
     this.root.querySelector<HTMLButtonElement>('[data-view="attention"]')!.focus();
   }
   close(restoreFocus = true) {
+    if (!this.root.hidden) snapShut(this.root.firstElementChild);
     this.root.hidden = true; this.controller?.abort(); this.generation++; clearTimeout(this.searchTimer);
     if (restoreFocus && this.previousFocus?.isConnected) this.previousFocus.focus({ preventScroll: true });
   }
@@ -124,6 +136,10 @@ export class Reception {
     this.launcher.title = count ? `Front desk · ${count} ${count === 1 ? 'agent needs' : 'agents need'} you` : 'Open the front desk';
     this.launcher.setAttribute('aria-label', this.launcher.title);
     const badge = this.launcher.querySelector('small')!; badge.hidden = !count; badge.textContent = String(count);
+    // someone new is waiting: the bell on the button rings. Not on the first count after loading,
+    // which is the state of the office rather than news.
+    if (this.lastCount !== undefined && count > this.lastCount) replayAnimation(this.launcher, 'ring');
+    this.lastCount = count;
     this.root.querySelector('[data-count]')!.textContent = count ? String(count) : '';
     if (!this.isOpen) return;
     if (this.view === 'attention') this.paintAttention();
@@ -137,6 +153,8 @@ export class Reception {
     this.view = view; this.note(''); this.attentionKey = '';
     this.root.querySelectorAll<HTMLElement>('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === view)));
     this.content.scrollTop = 0;
+    // The section's contents arrive; the window and the content box themselves never move.
+    replayAnimation(this.content, 'swap');
     if (view === 'attention') this.paintAttention();
     if (view === 'task') this.paintTask();
     if (view === 'recap') this.startRecap();

@@ -21,9 +21,14 @@ try {
   await page.goto(`http://127.0.0.1:${port}/?zoom=1&debug`, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__herdrReady && window.hs?.model?.agents?.size > 0, null, { timeout: 30000 });
   await page.waitForTimeout(3000);
+  // Scenes wait their turn behind a ship card, and the mock ships at random: keep the cards out of
+  // the way so each click shows its own scene inside the wait below.
+  await page.evaluate(() => { window.hs.party.enabled = false; window.hs.party.close(); });
   const windowed = ['Sales report', 'Awards', 'Launch day', 'Crunch', 'Training', 'Convention'];
   for (const caption of windowed) {
-    await page.evaluate(() => window.hs.scenes.close());
+    // reset() empties the queue too: the weekly report lines an awards scene up behind itself, and a
+    // scene left over from the previous sample would otherwise be the one this click shows.
+    await page.evaluate(() => window.hs.scenes.reset());
     await page.waitForTimeout(100);
     await page.evaluate(() => { const s = window.hs.scenes; s.lastClosed = 0; s.recent.clear(); });
     await page.locator('#event-debug-tray button', { hasText: caption }).first().click();

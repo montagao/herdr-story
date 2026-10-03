@@ -8,11 +8,30 @@ import { paintExit } from './scenes/exit';
 import { departurePose } from './departure-motion';
 import { JANITOR_LOOK } from './scenes/regulars-art';
 import { JANITOR_ANCHOR_X, paintJanitor } from './scenes/janitor-art';
+import { studioIcon } from './icons';
+import { audio } from './audio';
 import './departure-cutscene.css';
 
 const W = 256, H = 160;
 const colour = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
 type Actor = { agent: AgentInfo; body: CanvasImageSource; face: CanvasImageSource; checkedOut: boolean };
+
+/** The scene's three words in 5x7 pixel capitals. Canvas text this small is anti-aliased, and the
+ *  stage shows each of its pixels three times over; these land on the same grid as the sprites. */
+const GLYPHS: Record<string, string> = {
+  B: '11110 10001 10001 11110 10001 10001 11110', C: '01110 10001 10000 10000 10000 10001 01110',
+  E: '11111 10000 10000 11110 10000 10000 11111', G: '01110 10001 10000 10111 10001 10001 01111',
+  I: '01110 00100 00100 00100 00100 00100 01110', N: '10001 11001 10101 10011 10001 10001 10001',
+  O: '01110 10001 10001 10001 10001 10001 01110', P: '11110 10001 10001 11110 10000 10000 10000',
+  R: '11110 10001 10001 11110 10100 10010 10001', S: '01111 10000 10000 01110 00001 00001 11110',
+  T: '11111 00100 00100 00100 00100 00100 00100', U: '10001 10001 10001 10001 10001 10001 01110',
+  Y: '10001 10001 01010 00100 00100 00100 00100', '!': '00100 00100 00100 00100 00100 00000 00100',
+};
+function letters(c: CanvasRenderingContext2D, text: string, x: number, y: number) {
+  [...text].forEach((letter, i) => GLYPHS[letter]?.split(' ').forEach((row, v) => {
+    for (let u = 0; u < row.length; u++) if (row[u] === '1') c.fillRect(x + i * 6 + u, y + v, 1, 1);
+  }));
+}
 
 /** A self-contained sprite scene: the office stays frozen behind its game window. */
 export class DepartureCutscene {
@@ -27,6 +46,7 @@ export class DepartureCutscene {
   private raf = 0;
   private reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   private complete = false;
+  private shown = new Map<string, string>();
   private resolve?: () => void;
   private onExit = (_id: string) => {};
   constructor(private textures: Phaser.Textures.TextureManager, private theme: Theme) {}
@@ -58,7 +78,7 @@ export class DepartureCutscene {
     this.root.querySelector('[data-play]')!.addEventListener('click', () => {
       this.root.querySelector<HTMLButtonElement>('[data-continue]')!.focus({ preventScroll: true });
       this.reduced = false; this.root.querySelector<HTMLButtonElement>('[data-play]')!.hidden = true;
-      this.root.querySelector('[data-continue]')!.textContent = 'Skip animation'; this.raf = requestAnimationFrame(this.tick);
+      this.say('continue', 'Skip animation'); this.raf = requestAnimationFrame(this.tick);
     });
     this.root.addEventListener('keydown', event => {
       if (event.key !== 'Tab') return;
@@ -70,12 +90,19 @@ export class DepartureCutscene {
     this.root.querySelector<HTMLButtonElement>('[data-continue]')!.focus({ preventScroll: true });
     this.draw();
     if (this.reduced) {
-      this.root.querySelector('[data-caption]')!.textContent = 'Recaps saved. The team is ready to leave.';
-      this.root.querySelector('[data-continue]')!.textContent = 'View results';
+      this.say('caption', 'Recaps saved. The team is ready to leave.');
+      this.say('continue', 'View results');
     } else this.raf = requestAnimationFrame(this.tick);
     return new Promise(resolve => { this.resolve = resolve; });
   }
 
+  /** The words change a handful of times in the whole scene, and draw() runs every frame: an
+   *  unchanged line is left alone, because every write is a mutation the window watcher answers. */
+  private say(what: 'count' | 'caption' | 'detail' | 'heading' | 'continue', text: string) {
+    if (this.shown.get(what) === text) return;
+    this.shown.set(what, text);
+    this.root.querySelector(`[data-${what}]`)!.textContent = text;
+  }
   private source(key: string, fallback = key): CanvasImageSource {
     return this.textures.get(this.textures.exists(key) ? key : fallback).getSourceImage() as CanvasImageSource;
   }
@@ -91,7 +118,7 @@ export class DepartureCutscene {
     c.fillStyle = colour(this.theme.wallWindow); c.fillRect(16, 26, 57, 34);
     c.fillStyle = '#dbe9dc'; c.fillRect(16, 40, 57, 2); c.fillRect(43, 26, 3, 34);
     c.fillStyle = '#677f86'; c.fillRect(85, 23, 59, 12);
-    c.fillStyle = '#fcffec'; c.font = '7px DotGothic16'; c.fillText('RECEPTION', 91, 32);
+    c.fillStyle = '#fcffec'; letters(c, 'RECEPTION', 88, 26);
     const desk = this.source('reception') as HTMLImageElement;
     c.drawImage(desk, 71, 39, 76, 58);
     // A small planter, kept out of the path.
@@ -114,7 +141,7 @@ export class DepartureCutscene {
     const poses = this.actors.map((actor, i) => ({ actor, janitor: false, pose: this.reduced
       ? { ...departurePose(0, 0), x: 44 + i % 6 * 25, y: 134 - i % 6 * 7, frame: 'standFront', visible: i < 6 }
       : departurePose(this.elapsed, i) }));
-    for (const { actor, pose } of poses) if (pose.finished) this.checkOut(actor);
+    for (const { actor, pose } of poses) if (pose.finished) this.checkOut(actor, true);
     // Gus walks alongside the procession to the door, then sweeps while the team files out.
     // He is a guide, so he never counts as a selected/closed agent.
     const progress = this.reduced ? 1 : Math.min(1, this.elapsed / 2300);
@@ -129,7 +156,7 @@ export class DepartureCutscene {
         paintJanitor(c, actor.body, actor.face, mode, progress < 1 ? 'ne' : 'se', Math.floor(this.elapsed / (mode === 'walk' ? 190 : 220)) % (mode === 'walk' ? 4 : 8));
         c.restore();
         c.fillStyle = '#284a5d'; c.fillRect(x - 4, y - 11, 25, 9);
-        c.fillStyle = '#fcffec'; c.font = '7px DotGothic16'; c.fillText('GUS', x + 1, y - 4);
+        c.fillStyle = '#fcffec'; letters(c, 'GUS', x, y - 10);
       } else {
         c.fillStyle = '#30251f55'; c.fillRect(x + 1, y + 29, 16, 3);
         c.drawImage(actor.body, p.x, p.y, p.w, p.h, x + p.dx, y + p.dy, p.w, p.h);
@@ -138,32 +165,36 @@ export class DepartureCutscene {
       }
       if (pose.waving) {
         c.fillStyle = '#fcffec'; c.fillRect(x - 5, y - 12, 30, 10); c.fillRect(x + 8, y - 2, 3, 3);
-        c.fillStyle = '#294d57'; c.font = '7px DotGothic16'; c.fillText('bye!', x, y - 4);
+        c.fillStyle = '#294d57'; letters(c, 'BYE!', x - 1, y - 11);
       }
     }
     c.globalAlpha = 1;
     const done = this.actors.filter(a => a.checkedOut).length;
-    this.root.querySelector('[data-count]')!.textContent = `${done} / ${this.actors.length} checked out`;
+    this.say('count', `${done} / ${this.actors.length} checked out`);
     this.canvas.dataset.frame = String(++this.frame); this.canvas.dataset.departed = String(done);
     const current = poses.find(p => p.pose.waving) ?? poses.find(p => p.pose.visible && !p.actor.checkedOut && p.pose.x > 0);
     if (current && !this.reduced) {
-      this.root.querySelector('[data-caption]')!.textContent = `${employeeName(current.actor.agent)} ${current.pose.waving ? 'says goodbye.' : 'is heading out.'}`;
-      this.root.querySelector('[data-detail]')!.textContent = current.actor.agent.workspace_name || current.actor.agent.cwd?.split('/').at(-1) || '';
+      this.say('caption', `${employeeName(current.actor.agent)} ${current.pose.waving ? 'says goodbye.' : 'is heading out.'}`);
+      this.say('detail', current.actor.agent.workspace_name || current.actor.agent.cwd?.split('/').at(-1) || '');
     }
-    if (done === this.actors.length) {
+    if (done === this.actors.length && !this.complete) {
       this.complete = true; this.root.dataset.complete = 'true';
-      this.root.querySelector('[data-heading]')!.textContent = 'Re-org complete';
-      this.root.querySelector('[data-caption]')!.textContent = 'Everyone’s out. Their work stays with you.';
-      this.root.querySelector('[data-detail]')!.textContent = 'Prompts, findings, and artifacts saved to the Journal.';
-      this.root.querySelector('[data-continue]')!.textContent = 'View results';
+      this.say('heading', 'Re-org complete');
+      this.say('caption', 'Everyone’s out. Their work stays with you.');
+      this.say('detail', 'Prompts, findings, and artifacts saved to the Journal.');
+      this.say('continue', 'View results');
       this.root.querySelector('[data-close]')!.setAttribute('aria-label', 'View Re-org results');
+      audio.blip('ok');
     }
   }
-  private checkOut(actor: Actor) {
+  /** Tick this one off the roll. `seen` is someone crossing the door in view: the first few are
+   *  heard, a long procession is not, and skipping the scene ticks the rest off in silence. */
+  private checkOut(actor: Actor, seen = false) {
     if (actor.checkedOut) return;
     actor.checkedOut = true; this.onExit(actor.agent.pane_id);
     const chip = [...this.root.querySelectorAll<HTMLElement>('[data-pane]')].find(el => el.dataset.pane === actor.agent.pane_id)!;
-    chip.dataset.done = 'true'; chip.textContent = `✓ ${employeeName(actor.agent)}`;
+    chip.dataset.done = 'true'; chip.insertAdjacentHTML('afterbegin', studioIcon('check', 10));
+    if (seen && this.actors.filter(a => a.checkedOut).length <= 5) audio.blip('tick');
   }
   private close() {
     this.stopEscape?.();

@@ -1,0 +1,28 @@
+/* The status bar's small motions, and the money windows that open from it. The bar's base look
+   is in style.css and the payment sheet's in studio.css; these rules are written to win over
+   both whichever sheet loads last.
+
+   The bar lives inside the office, where keyframes stop while a window is open; hud.ts holds a
+   gain back until the office is uncovered, so nothing here starts frozen. */
+
+/* ---- the bar ---- */
+/* The coin hops twice with the till, on the beat of the flash. */
+.hud-funds.flash .hud-coin { animation:coin-hop 180ms steps(1) 2; }
+@keyframes coin-hop { 0% { transform:translateY(-4px); } 50% { transform:none; } }
+/* The breakdown drops into place under the bar rather than appearing in it. */
+.hud-funds:hover .hud-break, .hud-funds:focus-visible .hud-break { animation:tip-in var(--quick-ms) steps(2,end); }
+@keyframes tip-in { from { transform:translateY(-4px); } }
+@media (prefers-reduced-motion:reduce) { .hud-funds.flash .hud-coin { animation:none; } }
+
+/* ---- payment details ---- */
+/* The title bar's close button, in the studio windows' own chrome. Theirs is matched on
+   [data-close], which this window cannot use: it opens over the studio, whose close it is not. */
+.payment-window .studio-header [data-close-payment] { margin-left:auto; padding:0 8px; border:0; background:transparent; box-shadow:none; font:22px/1 var(--font); color:#2d4356; cursor:pointer; }
+.payment-window .studio-header [data-close-payment]:hover { color:#000; }
+/* Hung from the top rather than centred: the sheet grows downward when its details arrive, and
+   the title bar and its close button stay where the pointer left them. */
+dialog.payment-window { margin-top:max(16px,6dvh); margin-bottom:auto; max-height:calc(100dvh - max(16px,6dvh) - 16px); }
+@media (max-width:600px) { dialog.payment-window { margin-top:16px; max-height:calc(100dvh - 32px); } }
+.payment-wait { display:flex; align-items:baseline; gap:2px; color:#536d7d; }
+/* the pressed button loses its bottom edge as it goes down */
+.payment-actions button:active, .setup-go:active { box-shadow:none; }
