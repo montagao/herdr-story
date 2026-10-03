@@ -20,7 +20,7 @@ function loadMuted() {
   catch { return false; } // Safari can deny storage in private/restricted browsing contexts.
 }
 
-type Cue = 'done' | 'blocked' | 'working' | 'points' | 'open' | 'close' | 'levelup' | 'party';
+type Cue = 'done' | 'blocked' | 'working' | 'points' | 'open' | 'close' | 'levelup' | 'party' | 'cash';
 
 // Cooldowns are long because nothing here is triggered by the person watching: points fly out of
 // every working agent every second or two, and one reconnect re-seats thirty agents at once. A
@@ -37,6 +37,8 @@ const CUES: Record<Cue, { src: string; volume: number; cooldown?: number }> = {
   levelup: { src: `${ROOT}/jingles/kyouiku_bara1.ogg`, volume: 0.138, cooldown: 30_000 },
   working: { src: `${ROOT}/sound_effects/z_se00.ogg`, volume: 0.037, cooldown: 5_000 },
   points:  { src: `${ROOT}/sound_effects/z_se03.ogg`, volume: 0.016, cooldown: 4_000 },
+  // the till: every sale gets heard, only a burst of them shares one ring
+  cash:    { src: `${ROOT}/sound_effects/z_se05.ogg`, volume: 0.05, cooldown: 1_500 },
   open:    { src: `${ROOT}/sound_effects/z_se04.ogg`, volume: 0.035 },
   close:   { src: `${ROOT}/sound_effects/z_se06.ogg`, volume: 0.036 },
 };

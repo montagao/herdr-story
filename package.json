@@ -26,6 +26,7 @@
     "shot": "node scripts/shot.mjs",
     "assets": "./scripts/extract-assets.sh",
     "typecheck": "tsc -p .",
+    "test:replay": "bun test bridge/replay.test.ts src/replay-timeline.test.ts src/replay-selection.test.ts src/replay-motion.test.ts && npm run build && node scripts/replay-smoke.mjs",
     "test:demo": "node scripts/demo-smoke.mjs",
     "demo:record": "node scripts/record-demo.mjs",
     "demo:export": "bun run bridge/demo-export.ts",

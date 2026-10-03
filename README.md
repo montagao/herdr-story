@@ -91,6 +91,12 @@ and billing windows currently need the full office. [Artwork details →](docs/a
 
 </details>
 
+### Replay your office
+
+Click **↶ Replay** above the agent roster to watch the past hour, 24 hours, seven days, or a custom period. Quiet stretches fast-forward; payments and notable journal events stay on screen longer. Pause, change speed, scrub the timeline, or jump straight to a highlight.
+
+Replay is read-only. It uses saved Stripe/RevenueCat payments and journal entries, plus agent status changes recorded while the bridge runs. Status recording starts with this version; older periods reconstruct desks from completed journal tasks. New recordings preserve room layouts, employee profiles, and original billing events. Older periods keep the full current office as context. Payment/task windows, milestone/release scenes, and music use the live office components; terminal transcripts are not recorded. [Replay storage and coverage](docs/replay.md).
+
 ## Get started
 
 You’ll need **Node.js 22.12+**, **npm**, and **Bun 1.3.14+** on Linux or macOS.

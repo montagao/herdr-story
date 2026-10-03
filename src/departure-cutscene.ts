@@ -2,7 +2,7 @@ import { closeOnEscape } from './escape';
 import type Phaser from 'phaser';
 import type { AgentInfo } from '../shared/types';
 import { employeeName } from '../shared/studio';
-import { BODY_POSE, FACE, FACE_W, FACE_H, bodyKey, faceKey, lookFor } from './sprites';
+import { BODY_POSE, FACE, FACE_W, FACE_H, bodyKey, faceKey, lookOf } from './sprites';
 import type { Theme } from './themes';
 import { paintExit } from './scenes/exit';
 import { departurePose } from './departure-motion';
@@ -34,7 +34,7 @@ export class DepartureCutscene {
   play(agents: AgentInfo[], onExit: (paneId: string) => void): Promise<void> {
     this.onExit = onExit;
     this.actors = agents.map(agent => {
-      const look = agent.office_look ?? lookFor(agent.pane_id);
+      const look = lookOf(agent);
       return { agent, body: this.source(bodyKey(look.body), 'body0'), face: this.source(faceKey(look.face), 'face0'), checkedOut: false };
     });
     this.root.id = 'reorg-cutscene';

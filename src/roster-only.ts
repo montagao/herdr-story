@@ -1,3 +1,4 @@
+import { bootSucceeded } from './loading';
 import type { OfficeClient } from './net/office-client';
 
 /** An asset check uses an actual image so SPA HTML fallbacks cannot masquerade as a PNG. */
@@ -33,4 +34,5 @@ export function openRosterOnly(client: OfficeClient, demo: boolean) {
   };
   update(); client.on(update); setInterval(update, 1500);
   (window as any).__herdrReady = true;
+  bootSucceeded();
 }

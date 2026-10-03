@@ -8,6 +8,9 @@ import { rankForLevel, tierForLevel, type AgentProgress } from '../model/office'
 import { employeeName, projectKey } from '../../shared/studio';
 
 const NAMES: Record<string, string> = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', opencode: 'OpenCode', grok: 'Grok', gemini: 'Gemini', aider: 'Aider' };
+/** One line of a roster row's menu. `edit` turns the line into an inline field on click. */
+export type RosterMenuItem = { label: string; run?: () => void | Promise<void>; edit?: { value: string; submit: (value: string) => void | Promise<void> }; danger?: boolean; disabled?: boolean };
+
 export function displayName(agent: string) { return NAMES[agent] ?? agent.charAt(0).toUpperCase() + agent.slice(1); }
 export function handleOf(agent: string, paneId: string) { return `@${agent}_${paneId.replace(/^w/, '').replace(':', '')}`; }
 export function statusLabel(s: AgentStatus) { return { working: 'working', blocked: 'needs you', idle: 'idle', done: 'done', unknown: '???' }[s]; }
@@ -96,6 +99,7 @@ function ago(ts: number) {
 }
 
 export class Feed {
+  unknownLabel = '???';
   private root = document.getElementById('posts')!;
   private pinned = document.getElementById('pinned')!;
   private tabs = [...document.querySelectorAll<HTMLButtonElement>('.feed-tabs > *')];
@@ -114,6 +118,9 @@ export class Feed {
   onPreview?: (paneId: string) => void;
   onProjectSelect?: (project: string) => void;
   progressOf?: (paneId: string) => AgentProgress;
+  /** The row menu's entries for one desk; main decides what this office can do. */
+  menuFor?: (paneId: string) => RosterMenuItem[];
+  private menu?: HTMLElement;
 
   constructor() {
     this.root.addEventListener('click', (event) => {
@@ -126,6 +133,8 @@ export class Feed {
       }
       const project = target.closest<HTMLButtonElement>('.project-focus');
       if (project) { this.onProjectSelect?.(decodeURIComponent(project.dataset.project!)); return; }
+      const more = target.closest<HTMLButtonElement>('.agent-menu');
+      if (more) { this.openMenu(more.dataset.menuPane!, more.getBoundingClientRect()); return; }
       const row = target.closest<HTMLButtonElement>('.agent-row');
       if (row) { this.onSelect?.(row.dataset.pane!); return; }
       const money = target.closest<HTMLElement>('.money-row.expandable');
@@ -138,6 +147,12 @@ export class Feed {
       head.setAttribute('aria-expanded', String(!this.salesCollapsed));
       head.querySelector('.project-toggle')!.textContent = this.salesCollapsed ? '▸' : '▾';
       this.root.querySelector<HTMLElement>('#sales-events')!.hidden = this.salesCollapsed;
+    });
+    this.root.addEventListener('contextmenu', (event) => {
+      const row = (event.target as HTMLElement).closest<HTMLButtonElement>('.agent-row');
+      if (!row || !this.menuFor) return;
+      event.preventDefault();
+      this.openMenu(row.dataset.pane!, new DOMRect(event.clientX, event.clientY, 0, 0));
     });
     const preview = (event: Event) => {
       const row = (event.target as HTMLElement).closest<HTMLButtonElement>('.agent-row');
@@ -227,6 +242,53 @@ export class Feed {
   }
   /** Rows opened to read what the provider said; kept so a redraw does not fold them again. */
   private openMoney = new Set<string>();
+  /** A small pixel menu beside the row: pin, rename, find on the floor, and the rest. */
+  private openMenu(paneId: string, at: DOMRect) {
+    this.closeMenu();
+    const items = this.menuFor?.(paneId) ?? [];
+    if (!items.length) return;
+    const menu = document.createElement('div');
+    menu.className = 'roster-menu'; menu.setAttribute('role', 'menu');
+    const paint = () => {
+      menu.innerHTML = items.map((item, i) => `<button type="button" role="menuitem" data-item="${i}"${item.disabled ? ' disabled' : ''} class="${item.danger ? 'danger' : ''}">${esc(item.label)}</button>`).join('');
+    };
+    paint();
+    menu.addEventListener('click', async (event) => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-item]');
+      if (!button) return;
+      const item = items[Number(button.dataset.item)];
+      if (!item || item.disabled) return;
+      if (item.edit) {
+        const edit = item.edit;
+        menu.innerHTML = `<form class="roster-menu-edit"><label>${esc(item.label)}<input name="value" maxlength="40" required value="${esc(edit.value)}" autocomplete="off"></label><span><button type="submit">Save</button><button type="button" data-cancel>Cancel</button></span></form>`;
+        const input = menu.querySelector<HTMLInputElement>('input')!; input.focus(); input.select();
+        menu.querySelector('[data-cancel]')!.addEventListener('click', () => { paint(); });
+        menu.querySelector('form')!.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const value = input.value.trim(); if (!value) return;
+          this.closeMenu(); await edit.submit(value);
+        });
+        return;
+      }
+      this.closeMenu();
+      await item.run?.();
+    });
+    menu.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); this.closeMenu(); } });
+    document.body.append(menu);
+    // beside the button, kept inside the viewport
+    const width = menu.offsetWidth, height = menu.offsetHeight;
+    const left = Math.max(8, Math.min(window.innerWidth - width - 8, at.right - width));
+    const top = at.bottom + 4 + height > window.innerHeight - 8 ? Math.max(8, at.top - height - 4) : at.bottom + 4;
+    menu.style.left = `${left}px`; menu.style.top = `${top}px`;
+    this.menu = menu;
+    const first = menu.querySelector<HTMLButtonElement>('button:not([disabled])'); first?.focus();
+    const away = (event: Event) => { if (!menu.contains(event.target as Node)) this.closeMenu(); };
+    setTimeout(() => { document.addEventListener('pointerdown', away, { once: true }); }, 0);
+    this.root.addEventListener('scroll', () => this.closeMenu(), { once: true, capture: true });
+    addEventListener('keydown', (event: Event) => { if ((event as KeyboardEvent).key === 'Escape') this.closeMenu(); }, { once: true });
+  }
+  private closeMenu() { this.menu?.remove(); this.menu = undefined; }
+
   private static expandable(ev: MoneyEvent) { if (/^(evt_|revenuecat:)/.test(ev.id)) return true; const d = ev.detail; return !!d && !!(d.reason || d.feedback || d.comment || d.plan || d.url); }
   /** Fold or unfold one row in place: the Sales DOM is preserved across roster redraws, so the
    *  panel is edited there rather than rebuilt with everything else. */
@@ -256,14 +318,14 @@ export class Feed {
   private moneyHtml() {
     const rows = this.moneyRows();
     if (!rows.length) return '';
-    return `<section data-roster-key="sales" class="roster-money"><button type="button" class="money-head" aria-expanded="${!this.salesCollapsed}" aria-controls="sales-events"><span class="project-toggle" aria-hidden="true">${this.salesCollapsed ? '▸' : '▾'}</span><span class="money-coin" aria-hidden="true"></span><b>Sales</b></button><div id="sales-events" tabindex="0" role="region" aria-label="Recent sales"${this.salesCollapsed ? ' hidden' : ''}>${
+    return `<section data-roster-key="sales" class="roster-money"><button type="button" class="money-head" aria-expanded="${!this.salesCollapsed}" aria-controls="sales-events"><span class="project-toggle" aria-hidden="true">${this.salesCollapsed ? '▸' : '▾'}</span><span class="money-coin" aria-hidden="true"></span><b>Payments & subscriptions</b></button><div id="sales-events" tabindex="0" role="region" aria-label="Recent billing activity"${this.salesCollapsed ? ' hidden' : ''}>${
       rows.map((ev) => {
         const { tone } = MONEY_WORDS[ev.kind];
         const fresh = this.animateMoney.has(ev.id) ? ' new' : '';
         const source = ev.source === 'revenuecat' ? 'RevenueCat · ' : '';
         const expandable = Feed.expandable(ev), open = expandable && this.openMoney.has(ev.id);
         const opensDialog = !!this.onPayment && /^(evt_|revenuecat:)/.test(ev.id);
-        const attrs = opensDialog ? ' role="button" tabindex="0" aria-haspopup="dialog" title="View payment details"' : expandable ? ` role="button" tabindex="0" aria-expanded="${open}" title="Read more"` : '';
+        const attrs = opensDialog ? ' role="button" tabindex="0" aria-haspopup="dialog" title="View billing details"' : expandable ? ` role="button" tabindex="0" aria-expanded="${open}" title="Read more"` : '';
         return `<div class="money-row ${tone}${fresh}${expandable ? ' expandable' : ''}${open ? ' open' : ''}" data-money="${esc(ev.id)}"${attrs}><span class="money-what"><b>${esc(moneyText(ev))}</b><small>${esc(source + ev.label)}</small></span><span class="money-when">${esc(ago(ev.ts))}</span>${expandable ? '<span class="money-caret" aria-hidden="true">▸</span>' : ''}</div>${open ? this.moneyDetailHtml(ev) : ''}`;
       }).join('')}</div></section>`;
   }
@@ -356,12 +418,12 @@ export class Feed {
         <div class="project-agents"${collapsed ? ' hidden' : ''}>${group.agents.map((a) => {
           const kind = agentKind(a), progress = this.progressOf?.(a.pane_id), task = taskOf(a) || 'No active task';
           const state = a.wait_notice ? 'retry-wait' : a.completed_task ? 'done' : a.agent_status;
-          const label = a.wait_notice ? a.wait_notice.kind === 'rate_limit' ? 'Rate limited' : 'Waiting to retry' : a.completed_task ? 'done' : statusLabel(a.agent_status);
-          return `<button type="button" class="agent-row ${state}" data-pane="${esc(a.pane_id)}" aria-label="Open ${esc(employeeName(a))}, ${esc(label)}, ${esc(task)}">
+          const label = a.wait_notice ? a.wait_notice.kind === 'rate_limit' ? 'Rate limited' : 'Waiting to retry' : a.completed_task ? 'done' : a.agent_status === 'unknown' ? this.unknownLabel : statusLabel(a.agent_status);
+          return `<div class="agent-entry"><button type="button" class="agent-row ${state}" data-pane="${esc(a.pane_id)}" aria-label="Open ${esc(employeeName(a))}, ${esc(label)}, ${esc(task)}">
             <span class="roster-avatar"><span class="status-lamp ${state}" title="${esc(label)}"></span></span>
             <span class="agent-copy"><span class="agent-line"><b>${a.favorite ? '★ ' : ''}${esc(employeeName(a))}</b>${progress ? `<span class="level-badge" data-level-tier="${tierForLevel(progress.level)}" title="${rankForLevel(progress.level)} · Level ${progress.level}">Lv ${progress.level}</span>` : ''}<span class="agent-handle">${esc(handleOf(kind, a.pane_id))}</span></span><span class="agent-task">${esc(a.wait_notice?.detail ?? task)}</span></span>
             <span class="agent-state st ${state}">${esc(label)}</span><span class="agent-open" aria-hidden="true">›</span>
-          </button>`;
+          </button>${this.menuFor ? `<button type="button" class="agent-menu" data-menu-pane="${esc(a.pane_id)}" aria-label="More for ${esc(employeeName(a))}" aria-haspopup="menu" title="Pin, rename and more">⋯</button>` : ''}</div>`;
         }).join('')}</div>
       </section>`;
     }).join(''));

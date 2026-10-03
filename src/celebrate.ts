@@ -12,6 +12,7 @@ import { agentKind, titleOf } from '../shared/types';
 import { avatarCanvas } from './feed/avatar';
 import { displayName, clip, dur, moneyAmount } from './feed/feed';
 import { audio } from './audio';
+import { gameCurrency } from './currency';
 import { WORK, type WorkKind } from './work';
 import type { AgentProgress } from './model/office';
 import { closeOnEscape } from './escape';
@@ -34,6 +35,19 @@ export class Celebrate {
   private root = document.getElementById('party')!;
   private timer?: number;
   private last = 0;
+  private remaining = 0;
+  advance(delta: number) {
+    if (!this.replay || !this.isOpen) return;
+    this.remaining -= delta;
+    if (this.remaining <= 0) this.close();
+  }
+  private dismissAfter(ms: number) {
+    if (this.replay) this.remaining = ms;
+    else this.timer = window.setTimeout(() => this.close(), ms);
+  }
+  /** Timeline playback already spaces events; do not discard recorded celebrations. */
+  replay = false;
+  get isOpen() { return !this.root.hidden; }
   enabled = new URLSearchParams(location.search).get('celebrate') !== '0';
   /** Set from main so the card can show what the agent has done overall. */
   progress?: (paneId: string) => AgentProgress;
@@ -69,7 +83,7 @@ export class Celebrate {
   entryOf?: (id: string) => JournalEntry | undefined;
   show(a: AgentInfo, ev: OfficeEvent, gained?: WorkKind) {
     const now = Date.now();
-    if (!this.enabled || this.busy() || now - this.last < GAP_MS) return;
+    if (!this.enabled || this.busy() || (!this.replay && now - this.last < GAP_MS)) return;
     this.last = now;
     this.close();
     this.entryId = ev.completion?.entryId;
@@ -105,7 +119,7 @@ export class Celebrate {
     this.root.hidden = false;
     this.cheer();
     // a card with something to read stays a little longer
-    this.timer = window.setTimeout(() => this.close(), summary ? SHOW_MS + 2500 : SHOW_MS);
+    this.dismissAfter(summary ? SHOW_MS + 2500 : SHOW_MS);
   }
 
   /** Getting paid, celebrated like a shipped game.
@@ -114,14 +128,14 @@ export class Celebrate {
    *  game gets — cheering figure, confetti, fanfare — with the amount as the headline instead of a
    *  task title. Only money actually arriving: a refund or a failed charge still gets its coin on
    *  the floor and its line in the roster, but nobody throws a party for those. */
-  money(ev: MoneyEvent) {
+  money(ev: MoneyEvent, described = '') {
     if (ev.source === 'revenuecat' && ev.amount <= 0) return;
     const now = Date.now();
-    if (!this.enabled || !PAYDAY.has(ev.kind) || this.busy() || now - this.last < GAP_MS) return;
+    if (!this.enabled || !PAYDAY.has(ev.kind) || this.busy() || (!this.replay && now - this.last < GAP_MS)) return;
     this.last = now;
     this.close();
     const fig = Math.floor(Math.random() * FIGURES.length);
-    const amount = ev.amount ? moneyAmount(ev) : '';
+    const amount = ev.amount ? gameCurrency.display(ev.amount, ev.currency) : '';
     // A subscription with no charge on it is still news, it just has no figure to shout.
     const headline = amount || (ev.kind === 'sale' ? 'Paid!' : 'New subscriber!');
     this.root.innerHTML = `<div class="party-win payday">
@@ -130,15 +144,15 @@ export class Celebrate {
         <img class="party-fig" style="--figure-width:${FIGURES[fig][0]};--figure-height:${FIGURES[fig][1]}" src="/assets/gds/celebrate/cheer_${fig}.png" alt="" />
         <div class="party-text">
           <div class="party-head"><span class="payday-coin" aria-hidden="true"></span><b class="payday-amount">${esc(headline)}</b></div>
-          <div class="party-task">${esc(clip(ev.label, 64)) || 'a payment'}</div>
-          <div class="party-meta">${esc(PAYDAY_WORDS[ev.kind] ?? 'payment received')}</div>
+          <div class="party-task">${esc(clip(described.replace(new RegExp(`\\s·\\s${amount.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), '') || ev.label, 72)) || 'a payment'}</div>
+          <div class="party-meta">${esc(PAYDAY_WORDS[ev.kind] ?? 'payment received')}${described && ev.label ? ` · ${esc(clip(ev.label, 40))}` : ''}</div>
         </div>
         <img class="party-trophy" src="/assets/gds/celebrate/trophy.png?v=2" alt="" />
       </div>
     </div>`;
     this.root.hidden = false;
     this.cheer();
-    this.timer = window.setTimeout(() => this.close(), SHOW_MS);
+    this.dismissAfter(SHOW_MS);
   }
 
   /** The fanfare goes through the shared audio gate rather than holding its own copy of the file:

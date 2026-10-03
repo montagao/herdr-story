@@ -1,4 +1,6 @@
+import { journalCategory } from './billing';
 import type { Employee, JournalEntry, JournalPage, JournalPageQuery } from './studio';
+import { recapMoney } from './recap-money';
 
 /**
  * The journal's page arithmetic for an in-memory journal, as the bridge does it: newest first, a
@@ -21,13 +23,16 @@ export function pageJournal(journal: JournalEntry[], employees: Employee[], quer
   if (!Number.isFinite(since) || since < 0) throw new Error('The journal start date is invalid.');
   const wanted = query.ids ? new Set(query.ids) : undefined;
   const names = new Map(employees.map(employee => [employee.id, employee.name]));
-  const ordered = journal.filter(entry => (!wanted || wanted.has(entry.id)) && (!project || entry.project === project) && (!kind || entry.kind === kind)
+  const ordered = journal.filter(entry => (!wanted || wanted.has(entry.id)) && (!project || entry.project === project) && (!kind || journalCategory(entry) === kind)
     && (query.read === undefined || !!entry.readAt === query.read)
     && (!query.trophies || entry.kind === 'milestone' || entry.kind === 'release') && entry.at > since
     && (!search || `${entry.title} ${entry.notes} ${entry.contributors.map(id => names.get(id) ?? '').join(' ')}`.toLowerCase().includes(search)))
     .sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  const money = query.moneySummary || query.summaryOnly ? recapMoney(ordered) : undefined;
+  if (money && money.totals.every(t => t.currency === 'usd')) money.usd = { amount: money.totals.reduce((sum, t) => sum + t.amount, 0), estimated: false };
+  if (query.summaryOnly) return { money, entries: [], cursor: null, total: ordered.length, revision, epoch };
   const remaining = before ? ordered.filter(entry => entry.at < before![0] || (entry.at === before![0] && entry.id < before![1])) : ordered;
   const entries = remaining.slice(0, limit), last = entries.at(-1);
-  return { entries: structuredClone(entries.reverse()), cursor: remaining.length > limit && last ? JSON.stringify([last.at, last.id]) : null,
+  return { ...(money ? { money } : {}), entries: structuredClone(entries.reverse()), cursor: remaining.length > limit && last ? JSON.stringify([last.at, last.id]) : null,
     total: ordered.length, revision, epoch };
 }

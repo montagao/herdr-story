@@ -1,3 +1,4 @@
+import { ReplayStore, buildReplay } from './replay';
 import { RecapFX } from './recap-fx';
 import { browserAccess } from './browser-access';
 import { extractWaitNotice } from './agent-wait';
@@ -44,7 +45,7 @@ const WRITABLE = process.env.HERDR_STORY_WRITE === '1'
   || (process.env.HERDR_STORY_WRITE === undefined && LOOPBACK);
 const POLL_MS = Number(process.env.HERDR_STORY_POLL_MS ?? 1000);
 const BRIDGE_STARTED_AT = Date.now();
-const READ_METHODS = new Set(['ping', 'agent.list', 'agent.get', 'agent.read', 'agent.transcript', 'agent.explain', 'agent.settings.options', 'agent.queue.status', 'agent.boss.briefing', 'agent.boss.archive']);
+const READ_METHODS = new Set(['ping', 'agent.list', 'agent.get', 'agent.read', 'agent.transcript', 'money.rates', 'agent.explain', 'agent.settings.options', 'agent.queue.status', 'agent.boss.briefing', 'agent.boss.archive']);
 const WRITE_METHODS = new Set(['agent.prompt', 'agent.queue', 'agent.queue.dismiss', 'agent.send_keys', 'agent.interrupt', 'agent.focus', 'pane.close', 'pane.zoom', 'agent.hire', 'agent.free', 'agent.boss', 'agent.settings.update', 'agent.settings.picker']);
 const HIRE_KINDS = new Set(['pi', 'claude', 'codex', 'gemini', 'cursor', 'devin', 'agy', 'cline', 'omp',
   'mastracode', 'opencode', 'copilot', 'kimi', 'kiro', 'droid', 'amp', 'grok', 'hermes', 'kilo', 'qodercli', 'maki']);
@@ -648,6 +649,8 @@ const recapFX = new RecapFX(fetch, Date.now, !MOCK || process.env.HERDR_STORY_ST
 if (!MOCK) recapFX.warm();
 const studio = new StudioStore(!MOCK || process.env.HERDR_STORY_STATE_DIR
   ? process.env.HERDR_STORY_STATE_DIR ?? join(homedir(), '.local', 'state', 'herdr-story') : undefined, { asyncWrite: true });
+const replay = new ReplayStore(!MOCK || process.env.HERDR_STORY_STATE_DIR
+  ? process.env.HERDR_STORY_STATE_DIR ?? join(homedir(), '.local', 'state', 'herdr-story') : undefined);
 const receipts = new MessageReceipts(!MOCK || process.env.HERDR_STORY_STATE_DIR
   ? process.env.HERDR_STORY_STATE_DIR ?? join(homedir(), '.local', 'state', 'herdr-story') : undefined);
 const paymentDetails = new PaymentDetailsStore(!MOCK || process.env.HERDR_STORY_STATE_DIR ? process.env.HERDR_STORY_STATE_DIR ?? join(homedir(), '.local', 'state', 'herdr-story') : undefined);
@@ -714,7 +717,12 @@ const sweep = new SweepService({
 
 let publishedAgents: AgentInfo[] = [], publishedWorkspaces: WorkspaceSummary[] = [];
 let publishedStudio = studio.snapshot(100);
+replay.recordStudio(publishedStudio);
 function broadcast(msg: ServerMsg) {
+  try {
+    if (msg.type === 'money' || msg.type === 'event') replay.recordEvent(msg.event);
+    else if (msg.type === 'studio') replay.recordStudio(msg.studio);
+  } catch (error) { console.warn('[replay] Could not record presentation:', (error as Error).message); }
   let wire: ServerMsg | undefined = msg;
   if (msg.type === 'agents') {
     const workspaces = msg.workspaces ?? publishedWorkspaces;
@@ -1026,7 +1034,7 @@ async function hireAgent(params: HireParams, onProgress?: (stage: 'creating' | '
 
   let promptError = '';
   if (params.task) {
-    try { await deliverPrompt(backend.call.bind(backend), params.kind, paneId, params.task); }
+    try { await deliverPrompt(backend.call.bind(backend), params.kind, paneId, params.task, { fresh: true }); }
     catch (error) { promptError = (error as Error).message; }
   }
   workspaceCheckedAt = 0;
@@ -1133,6 +1141,10 @@ async function dispatchFromPage(method: string, params: Record<string, unknown>,
     void poll();
     return result;
   }
+  if (method === 'studio.replay') {
+    await studio.flush();
+    return buildReplay(replay, studio, params.from, params.to);
+  }
   if (method === 'studio.get') { await studio.flush(); return studio.snapshot(params.compact ? 100 : undefined); }
   if (method === 'payment.detail') {
     const id = String(params.id ?? '');
@@ -1218,6 +1230,7 @@ async function dispatchFromPage(method: string, params: Record<string, unknown>,
   }
   if (method === 'agent.read') return agentOutput.read(params, { signal, priority: params.source === 'visible' ? 'interactive' : 'background' });
   if (method === 'agent.transcript') return transcriptTurns(String(params.target));
+  if (method === 'money.rates') return MOCK ? { date: new Date().toISOString().slice(0, 10), checked: Date.now(), rates: { php: 57.1, eur: 0.92, gbp: 0.78, jpy: 149.2, cad: 1.36 } } : recapFX.table();
   if (method === 'agent.interrupt') {
     const target = String(checked.target);
     if (interrupting.has(target)) throw Error('Stop is already in progress.');
@@ -1470,6 +1483,7 @@ async function poll() {
       since.delete(id); claudeQueues.delete(id); claudeDispatching.delete(id); current.delete(id);
       if (abandoned.length) await saveClaudeQueues();
     }
+    try { replay.record([...agents.values()]); } catch (error) { console.warn('[replay] Could not record activity:', (error as Error).message); }
     void enrichAgents();
   } catch (e) { console.log('[bridge] poll failed:', (e as Error).message); }
   finally { pollingAgents = false; }

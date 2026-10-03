@@ -1,3 +1,4 @@
+import { billingLabel, journalCategory, journalMoneyKind } from '../shared/billing';
 import { recapMoney, type RecapMoney } from '../shared/recap-money';
 import { janitorKey, JANITOR_WIDTH, JANITOR_HEIGHT } from './scenes/janitor-art';
 import type { PaymentSummary } from './payment-details';
@@ -9,11 +10,13 @@ import { settings } from './settings';
 import { agentKind, type AgentInfo } from '../shared/types';
 import { studioIcon } from './icons';
 import { renderMarkdown } from './markdown';
+import { gameCurrency } from './currency';
 import { handleOf } from './feed/feed';
 import { BOARD_COLORS, employeeName, goalProgress, projectKey, projectName, safeArtifactUrl, type Employee, type JournalEntry, type JournalPage, type JournalPageQuery, type Milestone, type ProjectBoard, type StudioState } from '../shared/studio';
 import type { OfficeClient } from './net/office-client';
 import type { OfficeScene } from './scenes/OfficeScene';
 import { avatarCanvas } from './feed/avatar';
+import { OUTFIT_COUNT, PORTRAIT_COUNT, wearableBody } from './sprites';
 import { WORK, WORK_KINDS } from './work';
 import { rankForLevel, tierForLevel } from './model/office';
 import type { RoomItem } from '../shared/studio';
@@ -95,7 +98,8 @@ export class Studio {
   private historyQueryLoaded = false;
   private historyMoney?: RecapMoney;
   private historyMoneyRevision = -1;
-  private moneyCache = new Map<string, { money: RecapMoney; revision: number }>();
+  private moneyCache = new Map<string, { money: RecapMoney; revision: number; at: number }>();
+  private moneyPending = new Map<string, Promise<JournalPage>>();
   private historyLoading = false;
   private historyError = false;
   private historyPaint?: () => void;
@@ -181,6 +185,7 @@ export class Studio {
     this.notice.id = 'studio-toast'; this.notice.hidden = true; this.notice.setAttribute('role', 'status');
     this.editBar.id = 'room-edit-bar'; this.editBar.hidden = true; this.editBar.setAttribute('role', 'region'); this.editBar.setAttribute('aria-label', 'Arrange furniture');
     this.recap.id = 'studio-recap'; this.recap.hidden = true;
+    gameCurrency.onChange(() => { this.paintRecap(); if (this.isOpen) this.render(); });
     document.getElementById('game')?.append(this.dock, this.recap, this.editBar);
     document.body.append(this.root, this.notice);
     this.dock.addEventListener('click', event => {
@@ -249,6 +254,11 @@ export class Studio {
       this.importLegacy();
       // a first visit has nothing to look back on; every later load may
       if (this.recapSince) this.recapArmed = true; else this.acknowledgeRecap(false);
+      // Five small aggregates warm the common periods without downloading any history.
+      for (const { value } of RECAP_RANGES) {
+        const query = { since: recapStart(value, this.recapSince) };
+        void this.fetchRecapMoney(query, this.recapMoneyKey(query, value)).catch(() => {});
+      }
     }
     this.paintRecap();
     // Never replace a draft or a focused filter when live work arrives.
@@ -260,7 +270,7 @@ export class Studio {
    * Retired ids prevent an old page from bringing deleted memories back; epochs handle restarts. */
   private acceptState(state: StudioState) {
     if (state.journalEpoch && this.historyEpoch !== state.journalEpoch) {
-      this.history.clear(); this.historyVersions.clear(); this.historyCursor = undefined; this.historyQuery = ''; this.historyRequest++; this.moneyCache.clear(); this.historyMoney = undefined; this.historyMoneyRevision = -1;
+      this.history.clear(); this.historyVersions.clear(); this.historyCursor = undefined; this.historyQuery = ''; this.historyRequest++; this.moneyCache.clear(); this.moneyPending.clear(); this.historyMoney = undefined; this.historyMoneyRevision = -1;
       this.historyLoading = false;
     }
     if (state.journalEpoch) this.historyEpoch = state.journalEpoch;
@@ -295,6 +305,22 @@ export class Studio {
       if (paint && this.isOpen && !this.root.querySelector('.studio-editor') && !this.root.contains(document.activeElement)) this.render();
     } catch (error) { this.toast(`Could not refresh changed history: ${(error as Error).message}`); }
   }
+  private recapMoneyKey(query: JournalPageQuery, range = this.recapRange) {
+    // Rolling windows share a last-known total while their exact new cutoff refreshes.
+    return JSON.stringify([range, range === 'look' || range === 'today' ? query.since : '', query.project || '', query.kind || '', query.search || '', !!query.trophies, query.read]);
+  }
+  private fetchRecapMoney(query: JournalPageQuery, key: string): Promise<JournalPage> {
+    const existing = this.moneyPending.get(key); if (existing) return existing;
+    const epoch = this.historyEpoch;
+    const pending = (this.client.call('studio.journal', { ...query, cursor: undefined, summaryOnly: true, moneySummary: true }) as Promise<JournalPage>).then(page => {
+      if (epoch === this.historyEpoch && (!epoch || page.epoch === epoch) && page.money) {
+        this.moneyCache.delete(key); this.moneyCache.set(key, { money: page.money, revision: page.revision, at: Date.now() });
+        if (this.moneyCache.size > 20) this.moneyCache.delete(this.moneyCache.keys().next().value!);
+      }
+      return page;
+    }).finally(() => { if (this.moneyPending.get(key) === pending) this.moneyPending.delete(key); });
+    this.moneyPending.set(key, pending); return pending;
+  }
   private async loadHistory(query: JournalPageQuery, paint: () => void) {
     clearTimeout(this.historySearchTimer); this.historySearchTimer = undefined;
     // A cleared search may have queued a read before a manual page click finished. Never
@@ -302,21 +328,24 @@ export class Studio {
     if (!this.state || this.historyLoading || this.historyPageCursor === null
       || (!query.moneySummary && (this.state.journalTotal ?? this.state.journal.length) <= this.state.journal.length)) return;
     this.historyLoading = true; this.historyError = false;
-    const request = ++this.historyRequest, queryKey = this.historyQuery;
+    const request = ++this.historyRequest;
     paint();
     try {
-      const page = await this.client.call('studio.journal', { ...query, cursor: this.historyPageCursor, limit: 100 }) as JournalPage;
-      if (request !== this.historyRequest || (this.historyEpoch && page.epoch !== this.historyEpoch)
-        || !this.state) return;
-      this.mergeHistory(page);
-      this.historyPageCursor = page.cursor; this.historyQueryLoaded = true;
-      if (page.money) {
-        this.historyMoney = page.money; this.historyMoneyRevision = page.revision;
-        this.moneyCache.delete(queryKey); this.moneyCache.set(queryKey, { money: page.money, revision: page.revision });
-        if (this.moneyCache.size > 20) this.moneyCache.delete(this.moneyCache.keys().next().value!);
-      }
-      if (!query.search && !query.project && !query.kind && !query.since && !query.trophies) this.historyCursor = page.cursor;
-      this.journalLimit += 100;
+      const summary = query.moneySummary ? this.fetchRecapMoney(query, this.recapMoneyKey(query)).then(page => {
+        if (request !== this.historyRequest || (this.historyEpoch && page.epoch !== this.historyEpoch)) return;
+        if (page.money) { this.historyMoney = page.money; this.historyMoneyRevision = page.revision; }
+        (this.historyPaint ?? paint)();
+      }) : Promise.resolve();
+      const history = (this.client.call('studio.journal', { ...query, moneySummary: false, cursor: this.historyPageCursor, limit: 100 }) as Promise<JournalPage>).then(page => {
+        if (request !== this.historyRequest || (this.historyEpoch && page.epoch !== this.historyEpoch)
+          || !this.state) return;
+        this.mergeHistory(page);
+        this.historyPageCursor = page.cursor; this.historyQueryLoaded = true;
+        if (!query.search && !query.project && !query.kind && !query.since && !query.trophies) this.historyCursor = page.cursor;
+        this.journalLimit += 100;
+        (this.historyPaint ?? paint)();
+      });
+      await Promise.all([history, summary]);
     } catch (error) {
       if (request === this.historyRequest) {
         this.historyError = true;
@@ -344,15 +373,25 @@ export class Studio {
     if (this.recap.hidden) return;
     const partial = (this.state?.journalTotal ?? 0) > (this.state?.journal.length ?? 0) && entries.length === this.state?.journal.length;
     const made = partial ? undefined : netMoney(entries);
-    const counts = { sale: 0, task: 0, trophy: 0, note: 0 };
-    for (const e of entries) counts[e.kind === 'milestone' || e.kind === 'release' ? 'trophy' : e.kind === 'sale' ? 'sale' : e.kind === 'task' ? 'task' : 'note']++;
+    const counts = { sale: 0, subscription: 0, task: 0, trophy: 0, note: 0 };
+    for (const e of entries) counts[e.kind === 'milestone' || e.kind === 'release' ? 'trophy' : e.kind === 'sale' ? journalCategory(e) as 'sale' | 'subscription' : e.kind === 'task' ? 'task' : 'note']++;
     const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-    const breakdown = [counts.sale && plural(counts.sale, 'payment'), counts.task && plural(counts.task, 'task'), counts.trophy && plural(counts.trophy, 'trophy', 'trophies'), counts.note && plural(counts.note, 'note')].filter(Boolean).join(', ');
+    const breakdown = [counts.subscription && plural(counts.subscription, 'subscription update'), counts.sale && plural(counts.sale, 'payment'), counts.task && plural(counts.task, 'task'), counts.trophy && plural(counts.trophy, 'trophy', 'trophies'), counts.note && plural(counts.note, 'note')].filter(Boolean).join(', ');
     const since = new Date(this.recapSince);
     const when = Date.now() - this.recapSince > 20 * 3600e3 ? since.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : since.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-    this.recap.innerHTML = `<button type="button" data-recap><span>WHILE YOU WERE AWAY · SINCE ${esc(when)}</span><b>${made?.amount ? `You made ${money(made.amount, made.currency)} · ` : ''}${entries.length}${partial ? '+' : ''} new ${entries.length === 1 ? 'memory' : 'memories'}${breakdown ? ` <small>${esc(breakdown)}</small>` : ''} <i>↗</i></b></button><button type="button" data-dismiss aria-label="Dismiss recap">×</button>`;
+    this.recap.innerHTML = `<button type="button" data-recap><span>WHILE YOU WERE AWAY · SINCE ${esc(when)}</span><b>${made?.amount ? `You made ${esc(gameCurrency.display(made.amount, made.currency))} · ` : ''}${entries.length}${partial ? '+' : ''} new ${entries.length === 1 ? 'memory' : 'memories'}${breakdown ? ` <small>${esc(breakdown)}</small>` : ''} <i>↗</i></b></button><button type="button" data-dismiss aria-label="Dismiss recap">×</button>`;
     this.recap.querySelector('[data-recap]')?.addEventListener('click', () => this.openRecap());
     this.recap.querySelector('[data-dismiss]')?.addEventListener('click', () => this.acknowledgeRecap());
+  }
+  /** The row menu's two quick edits: the same save the employee editor makes, with one field changed. */
+  pinEmployee(id: string, favorite: boolean) { return this.saveEmployee(id, { favorite }); }
+  renameEmployee(id: string, name: string) { return this.saveEmployee(id, { name: name.trim().slice(0, 40) }); }
+  private saveEmployee(id: string, changes: Partial<Pick<Employee, 'name' | 'favorite'>>) {
+    const person = this.state?.employees.find(e => e.id === id);
+    if (!person) { this.toast('That employee is no longer on the books.'); return Promise.resolve(false); }
+    // Records from before the outfit pool shrank still carry the short sheet, which the save
+    // validator refuses; send the outfit they are actually drawn in so a pin cannot fail on it.
+    return this.change({ op: 'employee.save', id: person.id, version: person.version, name: person.name, bio: person.bio, face: Math.min(person.face, PORTRAIT_COUNT - 1), body: Math.min(wearableBody(person.body), OUTFIT_COUNT - 1), favorite: person.favorite, ...changes });
   }
   /** Looking counts as caught up: the baseline moves to now and the card goes. */
   private acknowledgeRecap(paint = true) {
@@ -743,17 +782,17 @@ export class Studio {
     const active = this.agents.filter(a => a.employee_id === person.id), level = 1 + Math.floor(person.shipped / 3);
     const achievements = this.state!.journalSummary?.achievementsByEmployee[person.id] ?? this.state!.journal.filter(e => e.contributors.includes(person.id) && ['milestone', 'release'].includes(e.kind)).length;
     detail.innerHTML = `<div class="employee-passport"><span data-profile-preview></span><div><small>EMPLOYEE RECORD · SINCE ${new Date(person.createdAt).toLocaleDateString()}</small><h2>${esc(person.name)}</h2><p><span class="level-badge" data-level-tier="${tierForLevel(level)}">${rankForLevel(level)} · Lv ${level}</span> · ${esc(person.kind)}</p><div class="career-totals"><b>${person.shipped}<small>completed tasks</small></b><b>${achievements}<small>team achievements</small></b></div></div></div><div class="career-stats">${WORK_KINDS.map(stat => `<span>${WORK[stat].stat}<b>${person.stats[stat]}</b></span>`).join('')}</div>
-      <form class="studio-editor employee-editor"><fieldset class="editor-fields"${this.writable ? '' : ' disabled'}>${field('Employee name', `<input name="name" required maxlength="40" value="${esc(person.name)}">`)}${field('Their story', `<textarea name="bio" maxlength="1000" rows="3" placeholder="Our veteran debugger. Here since the first release.">${esc(person.bio)}</textarea>`)}<div class="appearance-controls"><fieldset><legend>Portrait</legend><button type="button" data-appearance="face" data-step="-1" aria-label="Previous portrait">←</button><span data-face-count></span><button type="button" data-appearance="face" data-step="1" aria-label="Next portrait">→</button></fieldset><fieldset><legend>Outfit</legend><button type="button" data-appearance="body" data-step="-1" aria-label="Previous outfit">←</button><span data-body-count></span><button type="button" data-appearance="body" data-step="1" aria-label="Next outfit">→</button></fieldset></div><input type="hidden" name="face" value="${person.face}"><input type="hidden" name="body" value="${person.body}"><label class="studio-check"><input type="checkbox" name="favorite"${checked(person.favorite)}>★ Pin this employee in the office and roster</label><div class="studio-form-actions"><button type="submit" class="primary">Save employee</button>${active.map(a => `<button type="button" data-talk="${esc(a.pane_id)}">Talk to ${esc(person.name)}</button>`).join('')}</div></fieldset><p class="studio-form-note" aria-live="polite"></p></form>
+      <form class="studio-editor employee-editor"><fieldset class="editor-fields"${this.writable ? '' : ' disabled'}>${field('Employee name', `<input name="name" required maxlength="40" value="${esc(person.name)}">`)}${field('Their story', `<textarea name="bio" maxlength="1000" rows="3" placeholder="Our veteran debugger. Here since the first release.">${esc(person.bio)}</textarea>`)}<div class="appearance-controls"><fieldset><legend>Portrait</legend><button type="button" data-appearance="face" data-step="-1" aria-label="Previous portrait">←</button><span data-face-count></span><button type="button" data-appearance="face" data-step="1" aria-label="Next portrait">→</button></fieldset><fieldset><legend>Outfit</legend><button type="button" data-appearance="body" data-step="-1" aria-label="Previous outfit">←</button><span data-body-count></span><button type="button" data-appearance="body" data-step="1" aria-label="Next outfit">→</button></fieldset></div><input type="hidden" name="face" value="${person.face}"><input type="hidden" name="body" value="${wearableBody(person.body)}"><label class="studio-check"><input type="checkbox" name="favorite"${checked(person.favorite)}>★ Pin this employee in the office and roster</label><div class="studio-form-actions"><button type="submit" class="primary">Save employee</button>${active.map(a => `<button type="button" data-talk="${esc(a.pane_id)}">Talk to ${esc(person.name)}</button>`).join('')}</div></fieldset><p class="studio-form-note" aria-live="polite"></p></form>
       <details class="career-continue"><summary>Continue this career with another agent</summary><p>A new session can use this employee’s name, appearance, and career. Other saved careers stay in the employee list.</p>${field('Agent at a desk', `<select data-bind-agent>${this.agents.map(a => `<option value="${esc(a.pane_id)}">${esc(employeeName(a))} · ${esc(a.pane_id)}</option>`).join('')}</select>`)}<button type="button" data-bind${this.writable && this.agents.length ? '' : ' disabled'}>Use this employee for that agent</button></details><section class="employee-memories"><h3>Career journal</h3>${this.entryRows(this.state!.journal.filter(e => e.contributors.includes(person.id)).slice(-10).reverse()) || '<p>Completed work and team milestones will become part of this career.</p>'}</section>`;
     const form = detail.querySelector<HTMLFormElement>('form')!;
     const preview = () => {
       const face = Number((form.elements.namedItem('face') as HTMLInputElement).value), body = Number((form.elements.namedItem('body') as HTMLInputElement).value);
       detail.querySelector('[data-profile-preview]')!.replaceChildren(avatarCanvas(person.id, 108, { face, body }));
-      detail.querySelector('[data-face-count]')!.textContent = `${face + 1} / 36`; detail.querySelector('[data-body-count]')!.textContent = `${body + 1} / 26`;
+      detail.querySelector('[data-face-count]')!.textContent = `${face + 1} / ${PORTRAIT_COUNT}`; detail.querySelector('[data-body-count]')!.textContent = `${body + 1} / ${OUTFIT_COUNT}`;
     };
     preview();
     form.querySelectorAll<HTMLButtonElement>('[data-appearance]').forEach(button => button.addEventListener('click', () => {
-      const kind = button.dataset.appearance!, input = form.elements.namedItem(kind) as HTMLInputElement, count = kind === 'face' ? 36 : 26;
+      const kind = button.dataset.appearance!, input = form.elements.namedItem(kind) as HTMLInputElement, count = kind === 'face' ? PORTRAIT_COUNT : OUTFIT_COUNT;
       input.value = String((Number(input.value) + Number(button.dataset.step) + count) % count); preview();
     }));
     form.addEventListener('submit', event => { event.preventDefault(); const data = new FormData(form); void this.change({ op: 'employee.save', id: person.id, version: person.version, name: data.get('name'), bio: data.get('bio'), face: Number(data.get('face')), body: Number(data.get('body')), favorite: data.has('favorite') }); });
@@ -770,16 +809,17 @@ export class Studio {
     const clock = (at: number) => new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
     return entries.map(raw => {
       const entry = this.readView(raw);
+      const category = journalCategory(entry);
       const project = this.state!.projects.find(p => p.id === entry.project);
       const people = entry.contributors.map(id => this.state!.employees.find(e => e.id === id)).filter((p): p is Employee => !!p);
       const long = entry.notes.length > 260 || entry.notes.split('\n').length > 4;
       const who = people.length ? `<span class="entry-who">${people.map(p => { const tag = this.tag(p); return `<button type="button" class="entry-person" data-person="${esc(p.id)}">${esc(p.name)}${tag ? ` <small>${esc(tag)}</small>` : ''}</button>`; }).join('')}</span>` : '';
       const where = project ? `<span class="entry-project"><i class="project-swatch" style="background:${esc(project.color)}"></i>${esc(project.name)}</span>` : entry.kind === 'sale' ? `<span class="entry-project">${entry.source === 'revenuecat' ? 'RevenueCat' : 'Stripe'}</span>` : '';
       const duration = entry.minutes ? (entry.minutes >= 60 ? `${Math.floor(entry.minutes / 60)}h ${entry.minutes % 60}m` : `${entry.minutes} min`) : '';
-      const amount = entry.kind === 'sale' && typeof entry.amount === 'number' ? `<b class="entry-amount ${entry.amount < 0 ? 'down' : 'up'}">${money(entry.amount, entry.currency, true)}</b>` : '';
+      const amount = category === 'sale' && typeof entry.amount === 'number' ? `<b class="entry-amount ${entry.amount < 0 ? 'down' : 'up'}">${money(entry.amount, entry.currency, true)}</b>` : '';
       const lead = people.length === 1 && entry.kind === 'task' ? `<span class="entry-face" data-portrait="${esc(people[0].id)}" data-size="34"></span>`
-        : `<span class="journal-glyph ${entry.kind}" aria-hidden="true">${studioIcon(entry.kind === 'task' ? 'check' : entry.kind === 'note' ? 'note' : entry.kind === 'sale' ? 'coin' : 'trophies', 18)}</span>`;
-      return `<article class="journal-row kind-${entry.kind}" data-journal-entry="${esc(entry.id)}"${entry.kind === 'sale' && entry.moneyId ? ` data-payment-row="${esc(entry.id)}"` : ''}${entry.source === 'agent' ? ` data-memory-chat="${esc(entry.id)}"` : ''}>${lead}<div class="entry-body"><button type="button" class="entry-title" data-entry="${entry.id}">${esc(entry.title)}</button><small class="entry-meta">${who}${where}</small>${entry.notes ? `<div class="entry-notes${long ? ' clamped' : ''}">${this.cachedMarkdown(entry.notes)}</div>${long ? '<button type="button" class="entry-more" data-more-notes aria-expanded="false">Show more</button>' : ''}` : ''}${artifact(entry.url)}</div><aside class="entry-aside"><time datetime="${new Date(entry.at).toISOString()}">${clock(entry.at)}</time>${amount}${duration ? `<span>${esc(duration)}</span>` : ''}${entry.model ? `<span class="entry-model">${esc(entry.model)}</span>` : ''}<span class="entry-kind">${KIND[entry.kind]}</span><button type="button" class="entry-read" data-read-entry="${esc(entry.id)}"${this.writable && !this.readDrafts.has(entry.id) ? '' : ' disabled'}>${this.readDrafts.has(entry.id) ? 'Saving…' : entry.readAt ? 'Mark unread' : 'Mark read & archive'}</button>${entry.source === 'agent' || entry.kind === 'sale' ? `<button type="button" class="entry-edit" data-edit-entry="${esc(entry.id)}" aria-label="Edit memory: ${esc(entry.title)}">Edit memory</button>` : ''}</aside></article>`;
+        : `<span class="journal-glyph ${category}" aria-hidden="true">${studioIcon(entry.kind === 'task' ? 'check' : entry.kind === 'note' || category === 'subscription' ? 'note' : entry.kind === 'sale' ? 'coin' : 'trophies', 18)}</span>`;
+      return `<article class="journal-row kind-${category}" data-journal-entry="${esc(entry.id)}"${category === 'sale' && entry.moneyId ? ` data-payment-row="${esc(entry.id)}"` : ''}${entry.source === 'agent' ? ` data-memory-chat="${esc(entry.id)}"` : ''}>${lead}<div class="entry-body"><button type="button" class="entry-title" data-entry="${entry.id}">${esc(entry.title)}</button><small class="entry-meta">${who}${where}</small>${entry.notes ? `<div class="entry-notes${long ? ' clamped' : ''}">${this.cachedMarkdown(entry.notes)}</div>${long ? '<button type="button" class="entry-more" data-more-notes aria-expanded="false">Show more</button>' : ''}` : ''}${artifact(entry.url)}</div><aside class="entry-aside"><time datetime="${new Date(entry.at).toISOString()}">${clock(entry.at)}</time>${amount}${duration ? `<span>${esc(duration)}</span>` : ''}${entry.model ? `<span class="entry-model">${esc(entry.model)}</span>` : ''}<span class="entry-kind">${entry.kind === 'sale' ? billingLabel(journalMoneyKind(entry)!) : KIND[entry.kind]}</span><button type="button" class="entry-read" data-read-entry="${esc(entry.id)}"${this.writable && !this.readDrafts.has(entry.id) ? '' : ' disabled'}>${this.readDrafts.has(entry.id) ? 'Saving…' : entry.readAt ? 'Mark unread' : 'Mark read & archive'}</button>${entry.source === 'agent' || entry.kind === 'sale' ? `<button type="button" class="entry-edit" data-edit-entry="${esc(entry.id)}" aria-label="Edit memory: ${esc(entry.title)}">Edit memory</button>` : ''}</aside></article>`;
     }).join('');
   }
   private readView(entry: JournalEntry): JournalEntry {
@@ -879,7 +919,7 @@ export class Studio {
     }));
     this.freshEntryControls<HTMLButtonElement>('[data-entry]').forEach(button => button.addEventListener('click', () => {
       const entry = this.state!.journal.find(e => e.id === button.dataset.entry); if (!entry) return;
-      if (entry.kind === 'sale' && entry.moneyId && this.onPayment) { this.onPayment({ id: entry.moneyId, source: entry.source === 'revenuecat' ? 'revenuecat' : 'stripe', title: entry.title, at: entry.at, amount: entry.amount, currency: entry.currency, url: entry.url }); return; }
+      if (journalCategory(entry) === 'sale' && entry.moneyId && this.onPayment) { this.onPayment({ id: entry.moneyId, source: entry.source === 'revenuecat' ? 'revenuecat' : 'stripe', title: entry.title, at: entry.at, amount: entry.amount, currency: entry.currency, url: entry.url }); return; }
       if (entry.source === 'agent') { this.openMemoryChat(entry); return; }
       const content = this.root.querySelector<HTMLElement>('.studio-content')!;
       if (entry.source === 'goal') {
@@ -907,7 +947,7 @@ export class Studio {
       if (!cached || cached.names !== namesKey) { cached = { names: namesKey, text: `${entry.title} ${entry.notes} ${entry.contributors.map(id => names.get(id) ?? '').join(' ')}`.toLowerCase() }; this.searchCache.set(entry, cached); }
       return cached.text.includes(needle);
     };
-    return [...entries.values()].map(entry => this.readView(entry)).sort((a, b) => b.at - a.at).filter(e => (trophies || !!this.journalSince || !!e.readAt === this.journalArchive) && (!trophies || ['milestone', 'release'].includes(e.kind)) && (!this.journalSince || trophies || e.at > this.journalSince) && (!this.journalProject || e.project === this.journalProject) && (trophies || !this.journalKind || e.kind === this.journalKind) && (!needle || matches(e)));
+    return [...entries.values()].map(entry => this.readView(entry)).sort((a, b) => b.at - a.at).filter(e => (trophies || !!this.journalSince || !!e.readAt === this.journalArchive) && (!trophies || ['milestone', 'release'].includes(e.kind)) && (!this.journalSince || trophies || e.at > this.journalSince) && (!this.journalProject || e.project === this.journalProject) && (trophies || !this.journalKind || journalCategory(e) === this.journalKind) && (!needle || matches(e)));
   }
   private journal(content: HTMLElement) {
     const trophies = this.page === 'trophies';
@@ -921,7 +961,8 @@ export class Studio {
         }
         return;
       }
-      const cachedMoney = this.moneyCache.get(key);
+      const storedMoney = this.moneyCache.get(this.recapMoneyKey(query()));
+      const cachedMoney = storedMoney && Date.now() - storedMoney.at < 120_000 ? storedMoney : undefined;
       this.historyMoney = cachedMoney?.money; this.historyMoneyRevision = cachedMoney?.revision ?? -1;
       this.historyQuery = key; this.historyRequest++; this.historyLoading = false; this.historyError = false;
       const filtered = !trophies || this.journalProject || this.journalKind || this.journalSearch || this.journalSince || trophies;
@@ -929,7 +970,7 @@ export class Studio {
       this.historyQueryLoaded = !filtered;
     };
     selectQuery();
-    content.innerHTML = `<div class="journal-heading"><div><small>${trophies ? 'THE TROPHY SHELF' : this.journalSince ? (this.recapRange === 'look' ? 'WHILE YOU WERE AWAY' : `RECAP · ${esc(this.recapPhrase().toUpperCase())}`) : 'THE STUDIO JOURNAL'}</small><h2 data-journal-title>${trophies ? 'Things we made happen.' : this.journalSince ? 'Here’s what happened.' : 'The work becomes a story.'}</h2><p class="journal-digest" data-digest></p></div><button type="button" class="primary" data-new-memory${this.writable ? '' : ' disabled'}>${trophies ? '＋ Record a release' : '＋ Add a memory'}</button></div>${trophies ? '' : this.journalSince ? `<div class="journal-mailboxes recap-ranges" role="group" aria-label="Recap window">${RECAP_RANGES.filter(r => r.value !== 'look' || this.recapLook).map(r => `<button type="button" data-recap-range="${r.value}" aria-pressed="${r.value === this.recapRange}">${r.label}</button>`).join('')}</div><div class="recap-summary" data-recap-summary></div>` : `<div class="journal-mailboxes" role="group" aria-label="Journal status"><button type="button" data-journal-box="unread" aria-pressed="${!this.journalArchive}">Unread</button><button type="button" data-journal-box="archive" aria-pressed="${this.journalArchive}">Archive</button></div>`}<div class="journal-filters">${field('Project', this.projectMenu('journal-project', 'Project', this.journalProject, 'All projects'))}${trophies ? '' : field('Kind', this.menu('journal-kind', 'Kind', this.journalKind, [{ value: '', label: 'All memories' }, { value: 'task', label: 'Completed work' }, { value: 'milestone', label: 'Milestones' }, { value: 'release', label: 'Releases' }, { value: 'note', label: 'Notes' }, { value: 'sale', label: 'Sales' }]))}${field('Find a memory', `<input type="search" data-journal-search value="${esc(this.journalSearch)}" placeholder="Search titles, notes, people…">`)}${this.journalSince ? '<button type="button" data-all-history>Show full journal</button>' : ''}</div><div class="journal-entries"></div>`;
+    content.innerHTML = `<div class="journal-heading"><div><small>${trophies ? 'THE TROPHY SHELF' : this.journalSince ? (this.recapRange === 'look' ? 'WHILE YOU WERE AWAY' : `RECAP · ${esc(this.recapPhrase().toUpperCase())}`) : 'THE STUDIO JOURNAL'}</small><h2 data-journal-title>${trophies ? 'Things we made happen.' : this.journalSince ? 'Here’s what happened.' : 'The work becomes a story.'}</h2><p class="journal-digest" data-digest></p></div><button type="button" class="primary" data-new-memory${this.writable ? '' : ' disabled'}>${trophies ? '＋ Record a release' : '＋ Add a memory'}</button></div>${trophies ? '' : this.journalSince ? `<div class="journal-mailboxes recap-ranges" role="group" aria-label="Recap window">${RECAP_RANGES.filter(r => r.value !== 'look' || this.recapLook).map(r => `<button type="button" data-recap-range="${r.value}" aria-pressed="${r.value === this.recapRange}">${r.label}</button>`).join('')}</div><div class="recap-summary" data-recap-summary></div>` : `<div class="journal-mailboxes" role="group" aria-label="Journal status"><button type="button" data-journal-box="unread" aria-pressed="${!this.journalArchive}">Unread</button><button type="button" data-journal-box="archive" aria-pressed="${this.journalArchive}">Archive</button></div>`}<div class="journal-filters">${field('Project', this.projectMenu('journal-project', 'Project', this.journalProject, 'All projects'))}${trophies ? '' : field('Kind', this.menu('journal-kind', 'Kind', this.journalKind, [{ value: '', label: 'All memories' }, { value: 'task', label: 'Completed work' }, { value: 'milestone', label: 'Milestones' }, { value: 'release', label: 'Releases' }, { value: 'note', label: 'Notes' }, { value: 'sale', label: 'Payments & refunds' }, { value: 'subscription', label: 'Subscription activity' }]))}${field('Find a memory', `<input type="search" data-journal-search value="${esc(this.journalSearch)}" placeholder="Search titles, notes, people…">`)}${this.journalSince ? '<button type="button" data-all-history>Show full journal</button>' : ''}</div><div class="journal-entries"></div>`;
     const paint = () => {
       if (!content.isConnected || !content.querySelector('.journal-entries')) return;
       content.dataset.historyPending = String(this.historyLoading);
@@ -940,7 +981,8 @@ export class Studio {
       if (this.journalSince && !trophies) {
         const totals = this.recapMoneyTotals(entries);
         const made = totals?.usd ? {amount: totals.usd.amount, currency: 'usd'} : undefined;
-        content.querySelector<HTMLElement>('[data-journal-title]')!.textContent = made?.amount ? `${totals?.usd?.estimated ? 'About' : 'You made'} ${money(made.amount, made.currency)} USD ${this.recapPhrase()}.` : entries.length ? `Here’s what happened ${this.recapPhrase()}.` : `Nothing happened ${this.recapPhrase()}.`;
+        const shown = made ? gameCurrency.convert(made.amount, 'usd') : undefined;
+        content.querySelector<HTMLElement>('[data-journal-title]')!.textContent = made?.amount ? `${totals?.usd?.estimated || shown?.estimated ? 'About' : 'You made'} ${shown ? gameCurrency.format(shown.amount) : `${money(made.amount, 'usd')} USD`} ${this.recapPhrase()}.` : entries.length ? `Here’s what happened ${this.recapPhrase()}.` : `Nothing happened ${this.recapPhrase()}.`;
         const summary = content.querySelector<HTMLElement>('[data-recap-summary]');
         if (summary) summary.innerHTML = this.recapSummary(entries);
         summary?.querySelector('[data-retry-recap]')?.addEventListener('click', () => {
@@ -1002,7 +1044,7 @@ export class Studio {
     const project = (id: string) => this.state?.projects.find(p => p.id === id)?.name ?? projectName(id);
     const card = (label: string, value: string, detail: string) => `<div class="recap-card"><small>${label}</small><b>${value}</b><span>${detail}</span></div>`;
     const cards = [
-      card('Money made · USD', totals?.usd ? `${totals.usd.estimated ? '≈ ' : ''}${esc(money(totals.usd.amount, 'usd'))}` : this.historyLoading ? 'Converting…' : 'Total unavailable',
+      card(`Money made · ${esc(gameCurrency.get().toUpperCase())}`, totals?.usd ? esc((totals.usd.estimated ? '≈ ' : '') + (gameCurrency.display(totals.usd.amount, 'usd').replace(/^≈/, totals.usd.estimated ? '' : '≈ '))) : this.historyLoading ? 'Converting…' : 'Total unavailable',
         !totals?.usd && !this.historyLoading ? `${this.historyError || !totals ? 'Could not load the total' : 'Exchange rates unavailable'}${totals?.totals.length ? `<br>${totals.totals.map(t => esc(money(t.amount, t.currency, false, true))).join(' + ')}` : ''}<br><button type="button" data-retry-recap>Try again</button>` : totals ? `${totals.usd?.estimated ? `Estimated · rates ${esc(totals.usd.rateDate)}<br>` : ''}${this.historyLoading && totals.usd ? 'Updating…<br>' : ''}${n(totals.payments, 'payment')}${totals.refunds ? ` · ${n(totals.refunds, 'refund or adjustment', 'refunds or adjustments')} deducted` : ''}${totals.billingEvents - totals.payments - totals.refunds ? ` · ${n(totals.billingEvents - totals.payments - totals.refunds, 'other billing event')}` : ''}` : 'Total for the selected period'),
       card('Shipped', String(tasks.length), tasks.length ? (top(byPerson, person) || n(new Set(tasks.flatMap(e => e.contributors)).size, 'person', 'people')) : 'no tasks completed'),
       card('Trophies', String(trophies.length), trophies.length ? esc(trophies[0].title) : 'no milestones or releases'),
@@ -1035,11 +1077,11 @@ export class Studio {
   }
   private editEntry(content: HTMLElement, entry?: JournalEntry, release = false) {
     const isTask = entry?.source === 'agent' || entry?.kind === 'sale';
-    const form = this.editor(content, entry ? 'Edit memory' : release ? 'Record a release' : 'Add a memory', field('Title', `<input name="title" required maxlength="160" placeholder="Our first public release" value="${esc(entry?.title)}">`) + field('Notes', `<textarea name="notes" rows="4" maxlength="6000" placeholder="What happened? What should we remember?">${esc(entry?.notes)}</textarea>`) + `<div class="editor-pair">${field('Project', `<select name="project"><option value="">Studio</option>${this.projectOptions(entry?.project ?? '')}</select>`)}${isTask ? `<p class="memory-source">${entry.kind === 'sale' ? `${entry.source === 'revenuecat' ? 'RevenueCat' : 'Stripe'} · ${typeof entry.amount === 'number' ? money(entry.amount, entry.currency, true) : 'sale'}` : 'Completed agent work'}</p>` : field('Memory kind', `<select name="kind"><option value="note"${selected(!release && entry?.kind !== 'release')}>Note</option><option value="release"${selected(release || entry?.kind === 'release')}>Release · display on trophy shelf</option></select>`)}</div>${field('Artifact link · optional', `<input name="url" type="url" maxlength="2000" placeholder="https://…" value="${esc(entry?.url)}">`)}${isTask ? `<div class="goal-contributors">${this.chips(entry.contributors)}</div>` : this.contributors(entry?.contributors ?? [])}`, form => {
+    const form = this.editor(content, entry ? 'Edit memory' : release ? 'Record a release' : 'Add a memory', field('Title', `<input name="title" required maxlength="160" placeholder="Our first public release" value="${esc(entry?.title)}">`) + field('Notes', `<textarea name="notes" rows="4" maxlength="6000" placeholder="What happened? What should we remember?">${esc(entry?.notes)}</textarea>`) + `<div class="editor-pair">${field('Project', `<select name="project"><option value="">Studio</option>${this.projectOptions(entry?.project ?? '')}</select>`)}${isTask ? `<p class="memory-source">${entry.kind === 'sale' ? `${entry.source === 'revenuecat' ? 'RevenueCat' : 'Stripe'} · ${typeof entry.amount === 'number' ? money(entry.amount, entry.currency, true) : billingLabel(journalMoneyKind(entry)!)}` : 'Completed agent work'}</p>` : field('Memory kind', `<select name="kind"><option value="note"${selected(!release && entry?.kind !== 'release')}>Note</option><option value="release"${selected(release || entry?.kind === 'release')}>Release · display on trophy shelf</option></select>`)}</div>${field('Artifact link · optional', `<input name="url" type="url" maxlength="2000" placeholder="https://…" value="${esc(entry?.url)}">`)}${isTask ? `<div class="goal-contributors">${this.chips(entry.contributors)}</div>` : this.contributors(entry?.contributors ?? [])}`, form => {
       const data = new FormData(form); void this.change({ op: 'entry.save', id: entry?.id, version: entry?.version, title: data.get('title'), notes: data.get('notes'), project: data.get('project'), kind: data.get('kind'), url: data.get('url'), contributors: this.picked(form) });
     });
     this.drafts.bind(form, `entry:${entry?.id ?? (release ? 'release' : 'new')}`, { kind: 'entry', id: entry?.id, release, version: entry?.version, title: entry?.title ?? (release ? 'New release' : 'New memory') });
-    if (entry) this.removeButton(form, entry.kind === 'sale' ? 'Remove this sale from the journal' : isTask ? 'Remove this completion and its career point' : 'Remove memory', () => void this.change({ op: 'entry.remove', id: entry.id, version: entry.version }));
+    if (entry) this.removeButton(form, entry.kind === 'sale' ? 'Remove this billing entry from the journal' : isTask ? 'Remove this completion and its career point' : 'Remove memory', () => void this.change({ op: 'entry.remove', id: entry.id, version: entry.version }));
     this.bindPeople();
   }
   private room(content: HTMLElement) {

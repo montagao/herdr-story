@@ -13,6 +13,9 @@ export function anchorOfficeNotification(root: HTMLElement) {
   };
   const observer = new ResizeObserver(update);
   observer.observe(game);
+  // Collapsing replay controls moves the office without changing its own size.
+  const controls = document.getElementById('replay-controls');
+  if (controls) observer.observe(controls);
   window.addEventListener('resize', update);
   update();
 }

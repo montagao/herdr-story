@@ -146,14 +146,28 @@ export function hash(s: string): number {
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return h >>> 0;
 }
+/** body25 is the one short sheet in the set: 65px wide, so it stops after the stand and walk
+ *  columns. Every pose a desk needs is cut from x >= 65 of the sheet — both typing frames, the
+ *  cheer, the collapse — and comes back empty, which left a working agent's face burning away
+ *  over an empty chair. Hand those agents a full sheet instead. The pool stays 26 wide, so nobody
+ *  else's appearance moves. */
+export const SHORT_BODY = 25, SHORT_BODY_STANDIN = 23;
+export const wearableBody = (body: number) => (body === SHORT_BODY ? SHORT_BODY_STANDIN : body);
+/** What the employee editor and a fresh employee record may pick from. The short sheet is the last
+ *  body index, so outfits stop one before the end of the pool. Kept in step by bridge/studio.ts. */
+export const OUTFIT_COUNT = BODY_COUNT - 1, PORTRAIT_COUNT = FACE_COUNT;
+
 /** Stable look per pane: which body sheet + face sheet. */
 const officeLooks = new Map<string, { body: number; face: number }>();
 export function setOfficeLooks(agents: AgentInfo[]) { for (const a of agents) if (a.office_look) officeLooks.set(a.pane_id, a.office_look); }
 export function lookFor(paneId: string) {
-  const custom = officeLooks.get(paneId); if (custom) return custom;
+  const custom = officeLooks.get(paneId); if (custom) return { body: wearableBody(custom.body), face: custom.face };
   const h = hash(paneId);
-  return { body: h % BODY_COUNT, face: (h >>> 8) % FACE_COUNT };
+  return { body: wearableBody(h % BODY_COUNT), face: (h >>> 8) % FACE_COUNT };
 }
+/** What to draw for an agent: their saved employee outfit if they have one, their pane's own look
+ *  otherwise. Both come back wearable. */
+export const lookOf = (a: AgentInfo) => a.office_look ? { body: wearableBody(a.office_look.body), face: a.office_look.face } : lookFor(a.pane_id);
 
 /** Optional looks/themes load independently of the sleeping game loop and coalesce by texture. */
 const pendingTextures = new WeakMap<Phaser.Textures.TextureManager, Map<string, Promise<void>>>();

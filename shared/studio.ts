@@ -1,4 +1,4 @@
-import type { AgentInfo } from './types';
+import type { AgentInfo, MoneyEvent } from './types';
 
 export type CareerStat = 'program' | 'scenario' | 'graphics' | 'sound' | 'debug' | 'promo';
 export const CAREER_STATS: CareerStat[] = ['program', 'scenario', 'graphics', 'sound', 'debug', 'promo'];
@@ -29,6 +29,8 @@ export interface JournalEntry {
   /** Recorded for money that moved: signed major units, and the provider's event id so a
    *  replayed poll cannot post the same sale twice. */
   amount?: number; currency?: string; moneyId?: string;
+  /** Original provider event type, including subscription lifecycle changes. */
+  moneyKind?: MoneyEvent['kind'];
 }
 export interface RoomItem {
   id: string; kind: 'decor' | 'whiteboard' | 'cabinet' | 'trophy' | 'boss';
@@ -46,6 +48,8 @@ export interface StudioState {
 }
 export interface JournalPageQuery {
   moneySummary?: boolean;
+  /** Return only the aggregate, without reading journal bodies. */
+  summaryOnly?: boolean;
   cursor?: string | null; limit?: number; project?: string; kind?: string; ids?: string[];
   search?: string; since?: number; trophies?: boolean; read?: boolean;
 }

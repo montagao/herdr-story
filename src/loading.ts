@@ -4,6 +4,13 @@
 const STEPS = ['art', 'bridge', 'agents'] as const;
 export type LoadStep = typeof STEPS[number];
 
+/** The red banner in index.html. It is also the net for a main.ts that never loaded at all, so it
+ *  can be showing before boot() even runs; anything that gets the office open takes it back down
+ *  rather than leaving a stale failure over a working room. */
+const bootBanner = () => document.getElementById('boot-error');
+export function bootFailed(message: string) { const box = bootBanner(); if (box) { box.hidden = false; box.textContent = `Could not start the office: ${message}`; } }
+export function bootSucceeded() { const box = bootBanner(); if (box) box.hidden = true; }
+
 export class Loading {
   private root = document.getElementById('loading');
   private status = this.root?.querySelector<HTMLElement>('[data-status]') ?? null;
@@ -20,7 +27,7 @@ export class Loading {
     if (this.status) this.status.textContent = text;
     if (this.bar) this.bar.style.width = `${Math.round(((STEPS.indexOf(step) + 1) / (STEPS.length + 1)) * 100)}%`;
   }
-  setNote(text: string) { if (this.note) this.note.textContent = text; }
+  setNote(text: string) { clearTimeout(this.slow); if (this.note) this.note.textContent = text; }
   fail(message: string) {
     if (!this.root) return;
     clearTimeout(this.slow);

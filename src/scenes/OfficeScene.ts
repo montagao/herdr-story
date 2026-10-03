@@ -1,9 +1,10 @@
+import { billingLabel, isCashEvent } from '../../shared/billing';
 import Phaser from 'phaser';
 import { waitIconTexture } from './wait-icon';
 import type { AgentInfo, AgentStatus, MoneyEvent, OfficeEvent } from '../../shared/types';
 import { agentKind, genericTitle, taskOf, titleOf } from '../../shared/types';
 import { OfficeModel, pairsOf, type Placement } from '../model/office';
-import { BODY_POSE, bodyKey, defineFrames, faceKey, loadSheets, lookFor, ensureAppearance, ensureTheme } from '../sprites';
+import { BODY_POSE, bodyKey, defineFrames, faceKey, loadSheets, lookFor, lookOf, ensureAppearance, ensureTheme } from '../sprites';
 import { FACE_OFFSET } from '../feed/avatar';
 import { displayName, speechFor, clip, moneyAmount, statusLabel } from '../feed/feed';
 import { anchorsFor, chairFor, deskFor, poseFor, seatSprites } from '../seats';
@@ -23,6 +24,8 @@ import { drawEntrance, type Entrance } from './exit';
 import { floorDepth, walkerDepth } from './depth';
 import { speechBubble } from './bubble';
 import { Visitor, type VisitorKind } from './visitor';
+import { customerLine } from '../money-words';
+import { gameCurrency } from '../currency';
 import { DepartureCutscene } from '../departure-cutscene';
 import { OfficeRegulars } from './office-regulars';
 
@@ -57,8 +60,9 @@ export class Workstation {
   workingSince = 0;
   /** The crunch scene has already played for this stretch of work. */
   crunchNoted = false;
-  /** Flat out after a long task: nothing else touches the pose until they get up. */
+  /** Flat out after a long task, or up cheering: nothing else touches the pose until it ends. */
   private collapsed = false;
+  private cheering?: Phaser.Time.TimerEvent;
   private collapseTimer?: Phaser.Time.TimerEvent;
   /** Where the occupant sits, and where their name tag hangs when they are in that chair. */
   readonly seat = { x: 0, y: 0 };
@@ -138,7 +142,14 @@ export class Workstation {
     this.person.setVisible(false);
   }
 
-  destroy() { this.stopAnims(); this.speechTimer?.remove(); this.speech?.destroy(); for (const p of this.parts) p.destroy(); }
+  destroy() {
+    // A replay can rebuild the floor while the staff are cheering. Those completion
+    // timers must not restart work animations on an already destroyed workstation.
+    this.cheering?.remove(); this.collapseTimer?.remove();
+    this.status = 'empty'; this.agent = null;
+    this.stopAnims(); this.speechTimer?.remove(); this.speech?.destroy();
+    for (const p of this.parts) p.destroy();
+  }
 
   /** Stand the occupant somewhere on the floor. Depth follows their feet so they pass in front of
    *  the desks below them and behind the ones above (see depth.ts). Inside their own desk's floor,
@@ -168,7 +179,7 @@ export class Workstation {
 
   /** One step of the shared animation clock: 8 a second, the same for every desk. */
   tick(t: number) {
-    if (this.away || this.collapsed) return;
+    if (this.away || this.collapsed || this.cheering) return;
     if (this.agent?.wait_notice) {
       // Hold upright, then turn over in four sprite-clock steps every two seconds.
       const phase = t % 16;
@@ -179,6 +190,20 @@ export class Workstation {
     this.body.setFrame(this.pose.typing[(t >> 1) % 2]); this.layoutFace();
     if (this.sp.screen) this.pc.setFrame('on' + ((t >> 2) % 5));
     if (this.flame.visible) this.flame.setFrame('flame' + (t % 4));
+  }
+
+  /** Arms up for a moment, the way the whole floor looks up when money lands. */
+  cheerFor(ms = 1800) {
+    if (this.away || this.collapsed || !this.agent || this.status === 'empty') return;
+    this.cheering?.remove();
+    this.bob?.stop(); this.bob = undefined;
+    this.glancing = false;
+    this.body.setFrame('cheer'); this.face.setFrame('front3'); this.layoutFace();
+    this.bob = this.scene.tweens.add({ targets: this.person, y: this.person.y - 6, duration: 180, yoyo: true, repeat: Math.max(1, Math.floor(ms / 360)) });
+    this.cheering = this.scene.time.delayedCall(ms, () => {
+      this.cheering = undefined;
+      if (!this.away && !this.collapsed && this.status !== 'empty') this.setStatus(this.status, false);
+    });
   }
 
   /** Flat on the floor after a long haul, the way the game's staff drop after a crunch. The pose
@@ -278,7 +303,11 @@ export class Workstation {
     if (!a) { this.hovered = false; this.status = 'empty'; this.dress(1); this.person.setVisible(false); this.tag.setText(''); this.workspaceTag.setText('').setVisible(false); this.talk.setVisible(false); this.refreshAssignment(); this.stopAnims(); this.bubble.setVisible(false); this.flame.setVisible(false); this.speech?.destroy(); this.speech = undefined; this.pc.setFrame(this.sp.pc.frame); return; }
     const look = this.loadedLook(a.pane_id);
     this.kind = workKindOf(a);
-    this.body.setTexture(bodyKey(look.body), this.pose.typing[0]); this.layoutFace(); this.face.setTexture(faceKey(look.face), this.pose.face).setVisible(true);
+    // A sync only changes the sheets when the look changed; resetting the frame on every poll
+    // would cut off a cheer or a collapse mid-pose.
+    if (this.body.texture.key !== bodyKey(look.body)) this.body.setTexture(bodyKey(look.body), this.pose.typing[0]);
+    if (this.face.texture.key !== faceKey(look.face)) this.face.setTexture(faceKey(look.face), this.pose.face);
+    this.layoutFace(); this.face.setVisible(true);
     this.person.setVisible(true).setAlpha(1);
     this.setClickEnabled(true);
     this.setLevel(level);
@@ -398,6 +427,7 @@ export class Workstation {
     if (s === 'working' && !this.agent?.wait_notice) { if (this.status !== 'working' || !this.workingSince) { this.workingSince = Date.now(); this.crunchNoted = false; } }
     else { this.workingSince = 0; this.crunchNoted = false; }
     if (this.collapsed) { this.collapsed = false; this.collapseTimer?.remove(); this.collapseTimer = undefined; if (!this.away) this.person.setDepth(this.ay * 10 + this.sp.person.sort); }
+    if (this.cheering) { this.cheering.remove(); this.cheering = undefined; }
     this.status = s;
     // Status events arrive before the next agent snapshot. Refresh the hover immediately.
     this.setLevel(this.level);
@@ -458,7 +488,7 @@ export class Workstation {
     this.ambient = this.scene.time.addEvent({ delay: Phaser.Math.Between(1500, 6000), callback: () => {
       if (this.status !== 'idle') return;
       // fidgeting is for people in a chair: away from the desk the walk cycle owns the sprite
-      if (this.away || this.collapsed) { this.scheduleFidget(); return; }
+      if (this.away || this.collapsed || this.cheering) { this.scheduleFidget(); return; }
       const P = this.pose;
       const r = Math.random();
       const back = () => { if (this.status === 'idle') { this.body.setFrame(P.typing[0]); this.layoutFace(); } };
@@ -475,7 +505,7 @@ export class Workstation {
   }
   /** Game Dev Story speech bubble: white rounded box with a tail, above the head, gone after a moment. */
   say(text: string, ms = 2600) {
-    if ((window as any).__quiet || !this.canSpeak()) return;
+    if (!this.person.scene || (window as any).__quiet || !this.canSpeak()) return;
     this.speech?.destroy(); this.speechTimer?.remove();
     // Identity is persistent, so the bubble's tail sits just above the two-tier nameplate.
     this.speech = speechBubble(this.scene, this.person.x + 6, this.person.y - 35, text, this.tag.depth + 3).setVisible(!this.hovered);
@@ -502,7 +532,7 @@ export class Workstation {
   /** The work balloon, drawn the way DrawFukidashi does it: it appears above the head, lifts a
    *  little over its first moments, holds, and goes. */
   showWork() {
-    if ((window as any).__quiet) return;
+    if (!this.person.scene || (window as any).__quiet) return;
     const b = this.balloon.setTexture(`balloon${WORK[this.kind].balloon}`);
     b.setPosition(this.person.x + 14, this.person.y - 36).setScale(0.6).setAlpha(1).setVisible(true);
     this.scene.tweens.add({ targets: b, scale: 1, y: b.y - 5, duration: 220, ease: 'Back.out' });
@@ -574,6 +604,14 @@ export class OfficeScene extends Phaser.Scene {
   onCrunch?: (a: AgentInfo, ms: number) => void;
   static CRUNCH_MS = 25 * 60_000;
   private visitor?: Visitor;
+  private replayCustomer?: Visitor;
+  private replayVisit = 0;
+  private replayCustomerTimer?: Phaser.Time.TimerEvent;
+  replayPropAssets?: Set<string>;
+  private visitors: { kind: VisitorKind; line: string; onArrive?: () => void }[] = [];
+  /** Where the reception counter stands, for the receptionist's own bubble. */
+  private receptionDesk = { x: 0, y: 0 };
+  private peekReturn?: { x: number; y: number; timer: Phaser.Time.TimerEvent };
   onAssign?: (project: string) => void;
   canHire = () => false;
   props: Prop[] = [];
@@ -632,13 +670,14 @@ export class OfficeScene extends Phaser.Scene {
   onViewModeChange?: (wholeOffice: boolean) => void;
   get wholeOfficeView() { return !!this.previousView; }
   theme: Theme = activeTheme();
+  fitOnCreate = false;
 
   constructor() { super('office'); }
   init(data: { model: OfficeModel; onSelect?: (a: AgentInfo) => void; props?: Prop[]; seed?: number }) {
     this.model = data.model; this.onSelect = data.onSelect;
     this.props = data.props ?? []; this.seed = data.seed ?? 1;
   }
-  preload() { loadSheets(this.load, '/assets/gds', { theme: this.theme, looks: [...this.model.agents.values()].map(a => lookFor(a.pane_id)) }); loadProps(this.load, this.props); }
+  preload() { loadSheets(this.load, '/assets/gds', { theme: this.theme, looks: [...this.model.agents.values()].map(a => lookFor(a.pane_id)) }); loadProps(this.load, this.replayPropAssets ? this.props.filter(p => this.replayPropAssets!.has(p.id)) : this.props); }
 
   create() {
     // Do not call TimeStep.setFPSLimit from a running frame: its RAF restart can
@@ -657,6 +696,7 @@ export class OfficeScene extends Phaser.Scene {
     };
     document.addEventListener('keydown', boostKey);
     this.events.once('shutdown', () => {
+      this.cancelReplayCustomer();
       this.regulars?.destroy(); this.regulars = undefined;
       if (loop.callback === this.renderBudget?.step) loop.callback = originalFrame;
       canvas.removeEventListener('pointerdown', boost);
@@ -687,11 +727,14 @@ export class OfficeScene extends Phaser.Scene {
     this.forcedZoom = Number.isFinite(asked) && asked > 0 ? Phaser.Math.Clamp(asked, 0.5, 6) : undefined;
     this.zoom = this.chooseZoom();
     this.cameras.main.setZoom(this.zoom);
-    this.model.on((change) => { if (change === 'agents') this.sync(); });
+    // Replay replaces this scene when a different period is loaded. The old scene must
+    // stop observing the shared model before its cameras and game objects are destroyed.
+    this.events.once('shutdown', this.model.on((change) => { if (change === 'agents') this.sync(); }));
     this.sync();
+    if (this.fitOnCreate) this.fitOffice();
     // A resize changes what fits on screen, not how big the office is drawn. Re-clamp the current
     // centre as well: a tall window can otherwise expose a large strip beyond the back wall.
-    this.scale.on('resize', () => {
+    const resizeOffice = () => {
       this.renderBudget?.boost();
       const cam = this.cameras.main;
       if (this.wholeOfficeView) { this.applyOfficeFit(); return; }
@@ -700,7 +743,9 @@ export class OfficeScene extends Phaser.Scene {
       cam.setZoom(this.zoom);
       const p = this.clampCameraCentre(was.x, was.y);
       cam.centerOn(p.x, p.y);
-    });
+    };
+    this.scale.on('resize', resizeOffice);
+    this.events.once('shutdown', () => this.scale.off('resize', resizeOffice));
     // Arrow keys pan as well as dragging. Capture is left off deliberately: with it, Phaser calls
     // preventDefault on the arrows everywhere, which would stop them moving the caret in the
     // prompt box. The page itself cannot scroll, so nothing else wants them.
@@ -713,6 +758,7 @@ export class OfficeScene extends Phaser.Scene {
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (!this.canInteract() || !fromOfficeCanvas(this, p)) return;
       this.dragging = !this.furnishings.dragging && !this.projectDrag; this.dragFrom = { x: p.x, y: p.y }; this.camFrom = { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY };
+      if (this.peekReturn) { this.peekReturn.timer.remove(); this.peekReturn = undefined; }
     });
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
       this.dragging = false;
@@ -991,6 +1037,7 @@ export class OfficeScene extends Phaser.Scene {
       this.decor.push(reception, bell); this.updateReception();
       boxes.push(box, entrance.keepOut);
       this.receptionSpot = { x: r.x - 10, y: base + 2 };
+      this.receptionDesk = { x: r.x, y: base };
       this.entrance = entrance.entrance;
       this.outside = entrance.outside;
       floor.push({ x: box.x, y: base - 14, w: box.w, h: 16 });
@@ -1209,9 +1256,10 @@ export class OfficeScene extends Phaser.Scene {
     this.onViewModeChange?.(false);
   }
   private applyOfficeFit() {
-    const b = this.viewBounds ?? this.roomBounds, cam = this.cameras.main;
-    const zoom = Math.max(0.3, Math.min(2, (cam.width - 36) / b.w, (cam.height - 140) / b.h));
-    cam.panEffect.reset();
+    // Replay's overview includes the complete room walls, not just the desk bounds.
+    const b = this.fitOnCreate ? this.roomBounds : this.viewBounds ?? this.roomBounds, cam = this.cameras.main;
+    const zoom = Math.max(this.fitOnCreate ? 0.1 : 0.3, Math.min(2, (cam.width - 36) / b.w, (cam.height - 140) / b.h));
+    cam.panEffect.reset(); cam.zoomEffect.reset();
     this.zoom = zoom;
     cam.setZoom(zoom).centerOn(b.x + b.w / 2, b.y + b.h / 2);
   }
@@ -1241,6 +1289,21 @@ export class OfficeScene extends Phaser.Scene {
     const p = this.clampCameraCentre(st.person.x + 8, st.person.y);
     this.cameras.main.pan(p.x, p.y, 450, Phaser.Math.Easing.Sine.InOut);   // v4 takes the function, not the name
     return true;
+  }
+
+  /** Replay direction uses the recorded actor, or the payment counter. */
+  frameReplay(paneId?: string) {
+    const st = paneId ? this.byPane.get(paneId) : undefined;
+    if (paneId && !st) return;
+    this.followedPane = undefined;
+    this.previousView = undefined;
+    const cam = this.cameras.main;
+    const point = st ? { x: st.person.x + 8, y: st.person.y } : this.receptionSpot;
+    this.zoom = Math.min(2, Math.max(1, cam.width / 520));
+    const reduced = this.presentationPaused || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    cam.zoomTo(this.zoom, reduced ? 0 : 700, Phaser.Math.Easing.Sine.InOut, true);
+    cam.pan(point.x, point.y + cam.height * 0.18 / this.zoom, reduced ? 0 : 700, Phaser.Math.Easing.Sine.InOut, true);
+    this.renderBudget?.boost(900);
   }
 
   /** Centre the whole project's desk bank, including its unoccupied desks. */
@@ -1326,13 +1389,73 @@ export class OfficeScene extends Phaser.Scene {
    *
    *  Sound goes through the shared cues, so a burst of Stripe events cannot turn into a burst of
    *  noise; the coin still rises every time. */
-  money(ev: MoneyEvent) {
-    if ((window as any).__quiet) return;
+  /** Money news. A payment is a customer: they walk in over the landing with the coin over their
+   *  head, hand it over at reception, and only then does the till ring, the coins fly and the
+   *  floor look up. Everything else (refunds, failures, trials) still lands at the counter at
+   *  once. `describe` resolves to who paid for what, when the bridge knows; `onPaid` fires at the
+   *  moment of the till so the party, the HUD and the sound line up. */
+  money(ev: MoneyEvent, options: { describe?: () => Promise<string>; onPaid?: (line: string) => void; immediate?: boolean } = {}) {
+    if ((window as any).__quiet) { options.onPaid?.(''); return; }
+    const up = ev.kind === 'sale' || ev.kind === 'subscribed';
+    const canWalk = !options.immediate && up && (this.receptionSpot.x || this.receptionSpot.y) && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const line = options.describe?.().catch(() => '') ?? Promise.resolve('');
+    if (!canWalk) { void line.then(text => { this.payAt(ev, text); options.onPaid?.(text); }); return; }
+    this.peekAt(this.receptionSpot.x + 20, this.receptionSpot.y - 30, 6500);
+    void this.visit('customer', customerLine(ev), () => {
+      this.visitor?.pay();
+      void line.then(text => { this.payAt(ev, text); options.onPaid?.(text); });
+    });
+  }
+
+  cancelReplayCustomer() {
+    this.replayVisit++;
+    this.replayCustomerTimer?.remove(); this.replayCustomerTimer = undefined;
+    this.replayCustomer?.destroy(); this.replayCustomer = undefined;
+  }
+
+  /** An isolated, cancellable arrival driven by the replay scene clock. */
+  async replayPayment(ev: MoneyEvent, onPaid: () => void) {
+    this.cancelReplayCustomer();
+    const token = this.replayVisit;
+    const valid = () => token === this.replayVisit && this.sys.isActive();
+    const pay = () => { if (valid()) { this.payAt(ev, ev.label); onPaid(); } };
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !(this.receptionSpot.x || this.receptionSpot.y)) { pay(); return; }
+    let customer: Visitor;
+    // Each payment gets its own face and outfit; seeking/replaying keeps that casting.
+    const appearance = lookFor(`customer:${ev.source ?? 'stripe'}:${ev.id}`);
+    try { customer = await Visitor.create(this, 'customer', this.outside, appearance); }
+    catch { pay(); return; }
+    if (!valid()) { customer.destroy(); return; }
+    this.replayCustomer = customer;
+    const door = { ...this.entrance }, start = { ...this.outside };
+    const desk = { x: this.receptionSpot.x + 22, y: this.receptionSpot.y - 6 };
+    const path = [door, ...(this.wander.pathTo(door, desk) ?? [desk])];
+    customer.walk(path, false, () => {
+      if (!valid()) return;
+      customer.pay(); customer.say(customerLine(ev), 2000); pay();
+      this.replayCustomerTimer = this.time.delayedCall(2200, () => {
+        if (!valid()) return;
+        const path = [...(this.wander.pathTo(desk, door) ?? [door]), start];
+        customer.walk(path, true, () => {
+          if (this.replayCustomer === customer) this.replayCustomer = undefined;
+          customer.destroy();
+        }, 1600);
+      });
+    }, 2400);
+  }
+
+  private payAt(ev: MoneyEvent, described: string) {
     this.renderBudget?.boost(2500);
+    if (!isCashEvent(ev)) {
+      const at = this.receptionSpot.x || this.receptionSpot.y ? this.receptionSpot : this.roomCentre;
+      const notice = speechBubble(this, at.x + 8, at.y - 45, billingLabel(ev.kind), floorDepth(at.y) + 4000);
+      this.time.delayedCall(3000, () => notice.destroy());
+      return;
+    }
     const up = ev.kind === 'sale' || ev.kind === 'subscribed';
     const neutral = ev.kind === 'trial_started' || ev.kind === 'subscription_started' || ev.kind === 'subscription_pending' || ev.kind === 'subscription_resumed';
     const at = this.receptionSpot.x || this.receptionSpot.y ? this.receptionSpot : this.roomCentre;
-    const text = ev.amount ? moneyAmount(ev) : '';
+    const text = ev.amount ? gameCurrency.display(ev.amount, ev.currency) : '';
     const label = ev.kind === 'trial_started' ? 'new trial'
       : ev.kind === 'subscription_pending' ? 'sub pending'
       : ev.kind === 'subscription_started' ? 'new sub'
@@ -1346,25 +1469,32 @@ export class OfficeScene extends Phaser.Scene {
 
     // Money arriving is the point of the place, so it gets a shower of coins rather than one, and
     // the whole nearby desk row looks up. Anything else keeps the single coin it always had.
-    const coins = up ? Math.min(7, 3 + Math.floor(Math.abs(ev.amount) / 25)) : 1;
+    const big = up && (Math.abs(ev.amount) >= 20 || ev.kind === 'subscribed');
+    const coins = up ? Math.min(14, 4 + Math.floor(Math.abs(ev.amount) / 10)) : 1;
     for (let i = 0; i < coins; i++) {
-      const spread = coins === 1 ? 0 : Phaser.Math.Between(-34, 34);
+      const spread = coins === 1 ? 0 : Phaser.Math.Between(-40, 40);
       const c = this.add.image(at.x - 10 + spread, at.y - 26, 'main00', 'coin').setOrigin(0.5, 1)
         .setDepth(at.y * 10 + 60).setScale(0.6).setAlpha(i ? 0 : 1);
-      const delay = i * 90;
+      const delay = i * 70;
       this.tweens.add({ targets: c, scale: 1, alpha: 1, duration: 180, delay, ease: 'Back.out' });
-      this.tweens.add({ targets: c, y: `-=${Phaser.Math.Between(22, 40)}`, alpha: { from: 1, to: 0 },
+      this.tweens.add({ targets: c, y: `-=${Phaser.Math.Between(26, 48)}`, alpha: { from: 1, to: 0 },
         delay: delay + 700, duration: 1100, ease: 'Quad.out', onComplete: () => c.destroy() });
     }
     const note = this.add.text(at.x + 8, at.y - 26, label, { fontFamily: 'DotGothic16',
-      fontSize: up ? '14px' : '11px', color: colour, stroke: '#ffffff', strokeThickness: 3 })
+      fontSize: big ? '16px' : up ? '14px' : '11px', color: colour, stroke: '#ffffff', strokeThickness: 3 })
       .setOrigin(0, 1).setDepth(at.y * 10 + 61).setResolution(2);
     this.tweens.add({ targets: note, scale: 1, duration: 180, ease: 'Back.out' });
     this.tweens.add({ targets: note, y: `-=${up ? 34 : 26}`, alpha: { from: 1, to: 0 }, delay: 900, duration: 1100,
       ease: 'Quad.out', onComplete: () => note.destroy() });
+    // The receptionist announces who it was, when the bridge could say.
+    if (described && (this.receptionDesk.x || this.receptionDesk.y)) {
+      const bubble = speechBubble(this, this.receptionDesk.x + 12, this.receptionDesk.y - 44, described, this.receptionDesk.y * 10 + 4000);
+      this.time.delayedCall(4200, () => bubble.destroy());
+    }
 
     // Who notices. One person for ordinary news; for a payment, the few nearest reception, so it
-    // travels across the floor instead of being one quiet bubble in the corner.
+    // travels across the floor instead of being one quiet bubble in the corner. A real payment
+    // gets the whole floor on its feet.
     const crowd = this.pods.flatMap((p) => p.stations).filter((st) => st.agent && !st.away);
     const byDistance = crowd.sort((a, b) =>
       Math.hypot(a.person.x - at.x, a.person.y - at.y) - Math.hypot(b.person.x - at.x, b.person.y - at.y));
@@ -1377,8 +1507,47 @@ export class OfficeScene extends Phaser.Scene {
       if (i === 0) st.say(line, 2600);
       else this.time.delayedCall(i * 260, () => st.say(line, 2200));
     });
+    if (up) audio.play('cash');
     audio.play(up ? 'done' : neutral ? 'points' : 'blocked');
+    if (big) { this.cheerAll(); this.confetti(); }
     if (ev.kind === 'failed' || ev.kind === 'dispute') this.boom(at.x + 6, at.y - 6);
+  }
+
+  /** Everyone seated stands up and cheers, front row first, like the game's staff on a hit. */
+  cheerAll(ms = 1900) {
+    const seated = this.pods.flatMap((p) => p.stations).filter((st) => st.agent && !st.away).sort((a, b) => b.person.y - a.person.y);
+    seated.forEach((st, i) => this.time.delayedCall(Math.min(600, i * 45), () => st.cheerFor(ms)));
+  }
+
+  /** Confetti over the whole view, pinned to the screen so it falls wherever the camera is. */
+  confetti(count = 70) {
+    if (!this.textures.exists('confetti-px')) {
+      const g = this.make.graphics({}, false); g.fillStyle(0xffffff).fillRect(0, 0, 3, 3); g.generateTexture('confetti-px', 3, 3); g.destroy();
+    }
+    const view = this.cameras.main.worldView;
+    const tints = [0xf2c94c, 0xe8608a, 0x5cc7f0, 0x7ad37a, 0xffffff, 0xf29d4c];
+    for (let i = 0; i < count; i++) {
+      const bit = this.add.image(view.x + Phaser.Math.Between(0, view.width), view.y - Phaser.Math.Between(4, view.height / 2), 'confetti-px')
+        .setDepth(20_000).setTint(tints[i % tints.length]).setScale(Phaser.Math.FloatBetween(0.8, 1.6));
+      this.tweens.add({ targets: bit, y: view.bottom + 8, x: bit.x + Phaser.Math.Between(-30, 30), angle: Phaser.Math.Between(-180, 180),
+        duration: Phaser.Math.Between(1600, 2800), delay: Phaser.Math.Between(0, 700), ease: 'Sine.in', onComplete: () => bit.destroy() });
+    }
+  }
+
+  /** Glance at a spot that is off-screen, then come back, unless the person starts dragging. */
+  peekAt(x: number, y: number, ms = 5000) {
+    const cam = this.cameras.main;
+    if (this.wholeOfficeView || this.followedPane || this.dragging || this.peekReturn) return;
+    const view = cam.worldView, margin = 24 / cam.zoom;
+    if (x > view.x + margin && x < view.right - margin && y > view.y + margin && y < view.bottom - margin) return;
+    const from = this.camCentre();
+    const target = this.clampCameraCentre(x, y);
+    cam.pan(target.x, target.y, 650, 'Sine.easeInOut');
+    const timer = this.time.delayedCall(ms, () => {
+      this.peekReturn = undefined;
+      if (!this.dragging && !this.wholeOfficeView && !this.followedPane) cam.pan(from.x, from.y, 650, 'Sine.easeInOut');
+    });
+    this.peekReturn = { x: from.x, y: from.y, timer };
   }
 
   /** The game's explosion (event6) over a spot on the floor: a flash, the blast, then smoke that
@@ -1420,18 +1589,26 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
-  /** A visitor comes in over the landing, says their piece at reception, and leaves. One at a
-   *  time; a second caller while one is in the room is simply not shown. */
-  async visit(kind: VisitorKind, line: string) {
-    if ((window as any).__quiet || this.visitor || !(this.receptionSpot.x || this.receptionSpot.y)) return;
+  /** A visitor comes in over the landing, says their piece at reception, and leaves. One in the
+   *  room at a time; the rest wait on the landing, a short queue at most. `onArrive` fires at the
+   *  counter, before they speak: a customer hands their coin over there. */
+  async visit(kind: VisitorKind, line: string, onArrive?: () => void) {
+    if ((window as any).__quiet || !(this.receptionSpot.x || this.receptionSpot.y)) { onArrive?.(); return; }
+    if (this.visitor) { if (this.visitors.length < 4) this.visitors.push({ kind, line, onArrive }); else onArrive?.(); return; }
     const start = { ...this.outside }, door = { ...this.entrance }, desk = { x: this.receptionSpot.x + 22, y: this.receptionSpot.y - 6 };
     let visitor: Visitor;
-    try { visitor = await Visitor.create(this, kind, start); } catch { return; }
-    if (this.visitor) { visitor.destroy(); return; }
+    try { visitor = await Visitor.create(this, kind, start); } catch { onArrive?.(); return; }
+    if (this.visitor) { visitor.destroy(); if (this.visitors.length < 4) this.visitors.push({ kind, line, onArrive }); else onArrive?.(); return; }
     this.visitor = visitor;
     const inward = [door, ...(this.wander.pathTo(door, desk) ?? [desk])];
-    const finish = () => { if (this.visitor === visitor) this.visitor = undefined; visitor.destroy(); };
+    const finish = () => {
+      if (this.visitor === visitor) this.visitor = undefined;
+      visitor.destroy();
+      const next = this.visitors.shift();
+      if (next) void this.visit(next.kind, next.line, next.onArrive);
+    };
     visitor.walk(inward, false, () => {
+      onArrive?.();
       visitor.say(line, 2800);
       this.time.delayedCall(2900, () => {
         const outward = [...(this.wander.pathTo({ x: visitor.node.x, y: visitor.node.y }, door) ?? [door]), start];
@@ -1489,7 +1666,7 @@ export class OfficeScene extends Phaser.Scene {
     const ids = new Set(selected.map(a => a.pane_id));
     const walks = selected.map(a => this.depart(a.pane_id));
     try {
-      await Promise.all(selected.map(a => ensureAppearance(this.textures, a.office_look ?? lookFor(a.pane_id)).catch(() => {})));
+      await Promise.all(selected.map(a => ensureAppearance(this.textures, lookOf(a)).catch(() => {})));
       await new DepartureCutscene(this.textures, this.theme).play(selected, id => this.wander.finishDepartures(new Set([id])));
     } finally {
       this.wander.finishDepartures(ids);

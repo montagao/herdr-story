@@ -13,13 +13,13 @@
 <div id="app">
   <div id="game"><div id="themer"><button id="theme-btn" type="button" title="Office theme (T)" aria-expanded="false"></button><div id="theme-gallery" data-block-office-input hidden></div></div><div id="hud" hidden></div></div>
   <aside id="feed">
-    <header class="feed-head"><span class="feed-title"><span>Agents<small>office roster</small></span><span class="head-tools"><button id="hire-agent" type="button" title="Hire an agent" disabled><span aria-hidden="true">＋</span> Hire</button><button id="settings" type="button" title="Settings"></button><button id="mute" type="button" title="Sound"></button></span></span><nav class="feed-tabs" aria-label="Agent filters" role="tablist"><button type="button" class="active" data-filter="all" role="tab" aria-selected="true">All</button><button type="button" data-filter="blocked" role="tab" aria-selected="false">Needs you</button></nav></header>
+    <header class="feed-head"><span class="feed-title"><span>Agents<small>office roster</small></span><span class="head-tools"><button id="hire-agent" type="button" title="Hire an agent" disabled><span aria-hidden="true">＋</span> Hire</button><button id="settings" type="button" title="Settings"></button><button id="mute" type="button" title="Sound"></button></span></span><nav class="feed-tabs" aria-label="Agent filters" role="tablist"><button type="button" class="active" data-filter="all" role="tab" aria-selected="true">All</button><button type="button" data-filter="blocked" role="tab" aria-selected="false">Needs you</button><a class="replay-launch" href="?replay=1" title="Replay recorded office activity">↶ Replay</a></nav></header>
     <div id="pinned"></div>
     <div id="posts"></div>
   </aside>
 </div>
 <div id="dialog" role="dialog" aria-modal="true" data-block-office-input hidden></div>
-<div id="party" data-block-office-input hidden></div>
+<div id="party" hidden></div>
 <div id="billing-setup" role="dialog" aria-modal="true" data-block-office-input hidden></div>
 <div id="loading" role="status" aria-live="polite">
   <div class="load-sky"></div>
@@ -35,13 +35,21 @@
 <script>
 window.__herdrReady = false;
 function showBootError(reason) {
-  if (window.__herdrReady) return;
   const box = document.getElementById('boot-error');
   box.hidden = false;
   box.textContent = 'Could not start the office: ' + (reason && (reason.message || reason.reason && reason.reason.message) || String(reason));
 }
-addEventListener('error', showBootError);
-addEventListener('unhandledrejection', showBootError);
+// The net for a main.ts that never gets far enough to report for itself: a module that fails to
+// load or to parse. It has to be narrow, because the page is not ours alone — a browser extension
+// throwing "Could not establish connection. Receiving end does not exist." into it was being
+// shown as though the office had failed to start, over a running office. So: only a file served
+// from this origin counts, and once boot() is running its own catch does the reporting.
+function ourFile(url) { return typeof url === 'string' && url.indexOf(location.origin + '/') === 0; }
+addEventListener('error', function (event) {
+  if (window.__herdrReady) return;
+  const from = event.filename || (event.target && event.target !== window && event.target.src);
+  if (ourFile(from)) showBootError(event);
+}, true);
 </script>
 <script type="module" src="/src/main.ts"></script>
 </body>

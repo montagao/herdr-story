@@ -190,7 +190,11 @@ export class Storage {
       params.push(...query.ids);
     }
     if (query.project) { where.push("json_extract(j.data, '$.project') = ?"); params.push(query.project); }
-    if (query.kind) { where.push('j.kind = ?'); params.push(query.kind); }
+    if (query.kind === 'subscription' || query.kind === 'sale') {
+      where.push("j.kind = 'sale'");
+      const cash = `(COALESCE(j.money_amount, 0) != 0 AND COALESCE(json_extract(j.data, '$.moneyKind'), 'sale') IN ('sale','refund','dispute','subscribed','subscription_started'))`;
+      where.push(query.kind === 'sale' ? cash : `NOT ${cash}`);
+    } else if (query.kind) { where.push('j.kind = ?'); params.push(query.kind); }
     if (query.read !== undefined) where.push(query.read ? "COALESCE(json_extract(j.data, '$.readAt'), 0) > 0" : "COALESCE(json_extract(j.data, '$.readAt'), 0) = 0");
     if (query.trophies) where.push("j.kind IN ('milestone', 'release')");
     if (query.search) {
@@ -204,7 +208,7 @@ export class Storage {
       // Aggregate in SQLite: only one small row per currency crosses into JavaScript.
       // A covering money index avoids reading or decoding the journal text at all.
       let money: RecapMoney | undefined;
-      if (query.moneySummary) {
+      if (query.moneySummary || query.summaryOnly) {
         const amount = 'j.money_amount';
         const groups = this.db.query(`SELECT j.money_currency AS currency,
           SUM(${amount}) AS amount, SUM(CASE WHEN (${amount}) > 0 THEN 1 ELSE 0 END) AS payments,
@@ -214,6 +218,7 @@ export class Storage {
           payments: groups.reduce((n,g) => n + g.payments, 0), refunds: groups.reduce((n,g) => n + g.refunds, 0),
           billingEvents: groups.reduce((n,g) => n + g.billingEvents, 0) };
       }
+      if (query.summaryOnly) return { money, entries: [], cursor: null, total };
       const pageWhere = [...where], pageParams = [...params];
       if (query.before) { pageWhere.push('(j.at < ? OR (j.at = ? AND j.id < ?))'); pageParams.push(query.before[0], query.before[0], query.before[1]); }
       const found = this.db.query(`SELECT j.data FROM journal j WHERE ${pageWhere.join(' AND ')} ORDER BY j.at DESC, j.id DESC LIMIT ?`).all(...pageParams, query.limit + 1) as { data: string }[];

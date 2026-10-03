@@ -52,6 +52,14 @@ export class RecapFX {
     })().finally(() => { this.pending = undefined; });
     return this.pending;
   }
+  /** The table itself, for a browser that wants to estimate a figure the same way: USD per unit
+   *  of each currency, with the date the reference rate was published. Refreshes in the background. */
+  async table(): Promise<{ date?: string; checked: number; rates: Record<string, number> }> {
+    if (this.checked && this.now() - this.checked <= 7 * 86400_000) void this.refresh(); else await this.refresh();
+    const rates: Record<string, number> = {}; const dates: string[] = [];
+    for (const [quote, row] of this.rates) { rates[quote] = row.rate; dates.push(row.date); }
+    return { date: dates.sort()[0], checked: this.checked, rates };
+  }
   async convert(money: RecapMoney): Promise<RecapMoney> {
     const foreign = money.totals.some(t => t.currency !== 'usd' && t.amount !== 0);
     if (foreign) {

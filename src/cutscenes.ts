@@ -11,14 +11,14 @@ import { closeOnEscape } from './escape';
 import type Phaser from 'phaser';
 import type { AgentInfo } from '../shared/types';
 import { employeeName } from '../shared/studio';
-import { BODY_POSE, FACE, FACE_W, FACE_H, bodyKey, faceKey, lookFor, ensureAppearance } from './sprites';
+import { BODY_POSE, FACE, FACE_W, FACE_H, bodyKey, faceKey, lookOf, ensureAppearance } from './sprites';
 import { audio } from './audio';
 import './cutscenes.css';
 import { anchorOfficeNotification } from './office-notification';
 
 /** Someone drawn in a scene: a name for the caption and a body/face pair for the sprite. */
 export interface Actor { name: string; look: { body: number; face: number } }
-export const actorOf = (a: AgentInfo): Actor => ({ name: employeeName(a), look: a.office_look ?? lookFor(a.pane_id) });
+export const actorOf = (a: AgentInfo): Actor => ({ name: employeeName(a), look: lookOf(a) });
 
 type Cue = 'party' | 'levelup' | 'done' | 'blocked' | 'points';
 export interface Scene {
@@ -95,6 +95,17 @@ export class Cutscenes {
   private pumpTimer = 0;
   private lastClosed = 0;
   private waitingSince = 0;
+  replay = false;
+  private replayElapsed = 0;
+  private replayPaint?: (at: number) => void;
+  advance(delta: number) {
+    if (!this.replay || !this.current || !this.replayPaint) return;
+    this.replayElapsed += delta;
+    this.replayPaint(this.reduced ? this.current.duration : this.replayElapsed);
+    if (this.replayElapsed >= this.current.duration) this.close();
+  }
+  get pending() { return !!this.current || this.queue.length > 0; }
+  reset() { this.queue = []; clearTimeout(this.pumpTimer); this.recent.clear(); this.lastClosed = 0; this.close(); }
   private recent = new Map<string, number>();
   private reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   enabled = new URLSearchParams(location.search).get('celebrate') !== '0';
@@ -113,7 +124,7 @@ export class Cutscenes {
   play(scene: Scene) {
     if (!this.enabled) return;
     const shown = this.recent.get(scene.id);
-    if (shown && Date.now() - shown < REPEAT_MS) return;
+    if (!this.replay && shown && Date.now() - shown < REPEAT_MS) return;
     if (this.current?.id === scene.id || this.queue.some(s => s.id === scene.id)) return;
     this.queue.push(scene);
     while (this.queue.length > 4) this.queue.shift();
@@ -123,7 +134,7 @@ export class Cutscenes {
   private pump() {
     if (this.current || !this.queue.length) return;
     const now = Date.now();
-    if (this.busy() || now - this.lastClosed < GAP_MS) {
+    if (this.busy() || (!this.replay && now - this.lastClosed < GAP_MS)) {
       // a scene that has waited a minute for the screen is stale news; drop it
       if (!this.waitingSince) this.waitingSince = now;
       if (now - this.waitingSince > 60_000) { this.queue.shift(); this.waitingSince = 0; }
@@ -158,15 +169,17 @@ export class Cutscenes {
     const stage = new Stage(loaded, textures);
     const started = performance.now();
     const paint = (t: number) => { c.clearRect(0, 0, scene.width, scene.height); scene.paint(c, t, stage); };
-    if (this.reduced) paint(scene.duration);
+    if (this.replay) { this.replayElapsed = 0; this.replayPaint = paint; paint(this.reduced ? scene.duration : 0); }
+    else if (this.reduced) paint(scene.duration);
     else {
       const tick = (now: number) => { if (this.current !== scene) return; paint(now - started); this.raf = requestAnimationFrame(tick); };
       this.raf = requestAnimationFrame(tick);
     }
-    this.timer = window.setTimeout(() => this.close(), scene.duration);
+    if (!this.replay) this.timer = window.setTimeout(() => this.close(), scene.duration);
   }
 
   close() {
+    this.replayPaint = undefined;
     cancelAnimationFrame(this.raf); clearTimeout(this.timer);
     if (!this.root.hidden) this.lastClosed = Date.now();
     this.root.hidden = true; this.root.innerHTML = '';

@@ -15,6 +15,7 @@ import { closeOnEscape } from './escape';
 //   * Otherwise the office's own economy — shipped tasks at a fixed rate — clearly labelled as
 //     such so it is never mistaken for real revenue.
 import { audio } from './audio';
+import { gameCurrency } from './currency';
 import { REVENUE_RANGES, isRevenueRange, type RevenueRange } from '../shared/revenue-range';
 
 const POLL_MS = 60_000;
@@ -104,6 +105,7 @@ export class Hud {
     this.root.hidden = false;
     this.clock();
     this.clockTimer = window.setInterval(() => this.clock(), CLOCK_MS);
+    gameCurrency.onChange(() => { cancelAnimationFrame(this.animation); if (this.shown !== undefined) { this.shown = this.amount; this.amountEl!.textContent = this.money(this.amount); } });
     void this.refresh();
     this.timer = window.setInterval(() => void this.refresh(), POLL_MS);
   }
@@ -226,10 +228,20 @@ export class Hud {
       <div class="setup-body">
         <section class="revenue-setting"><label for="revenue-settings-range">Reporting period</label><select id="revenue-settings-range" aria-describedby="revenue-settings-range-note"></select>
           <p id="revenue-settings-range-note" class="setup-hint"></p></section>
+        <section class="revenue-setting"><label for="revenue-settings-currency">Game currency</label><select id="revenue-settings-currency" aria-describedby="revenue-settings-currency-note"></select>
+          <p id="revenue-settings-currency-note" class="setup-hint"></p></section>
         <section class="revenue-setting"><h3>Payment sources</h3><p class="revenue-settings-sources"></p>
           <button type="button" class="revenue-sources-button">Manage payment sources</button></section>
       </div>`;
-    const select = dialog.querySelector<HTMLSelectElement>('select')!;
+    const select = dialog.querySelector<HTMLSelectElement>('#revenue-settings-range')!;
+    const currency = dialog.querySelector<HTMLSelectElement>('#revenue-settings-currency')!;
+    currency.replaceChildren(...gameCurrency.choices().map(c => new Option(c.label, c.code)));
+    currency.value = gameCurrency.get();
+    const rateNote = () => { dialog.querySelector('#revenue-settings-currency-note')!.textContent = gameCurrency.rates
+      ? `Totals in another currency are converted at reference rates${gameCurrency.rates.date ? ` from ${gameCurrency.rates.date}` : ''} and shown with ≈. Rows keep their own currency.`
+      : 'Exchange rates are not available yet; figures stay in their own currency.'; };
+    rateNote();
+    currency.addEventListener('change', () => { gameCurrency.set(currency.value); rateNote(); });
     select.replaceChildren(...REVENUE_RANGES.map(r => new Option(this.calendarRanges && r.value === '24h' ? 'Today' : r.label, r.value)));
     select.value = this.range;
     dialog.querySelector('#revenue-settings-range-note')!.textContent =
@@ -296,12 +308,14 @@ export class Hud {
     el.classList.remove('go');
     void el.offsetWidth;          // restart the animation rather than letting it finish silently
     el.classList.add('go');
+    const cell = this.root?.querySelector<HTMLElement>('.hud-funds');
+    if (cell) { cell.classList.remove('flash'); void cell.offsetWidth; cell.classList.add('flash'); }
     audio.play('points');
     if (this.popTimer) clearTimeout(this.popTimer);
     this.popTimer = window.setTimeout(() => { el.hidden = true; }, 1800);
   }
 
-  private money(n: number) { return money(n, this.currency); }
+  private money(n: number) { return gameCurrency.display(n, this.currency, true); }
 }
 
 /** Whole units: a HUD is read at a glance, and cents are noise at this size. */

@@ -1,0 +1,80 @@
+body.replay-mode { display:flex; flex-direction:column; height:100dvh; overflow:hidden; }
+body.replay-mode #app { flex:1; min-height:0; height:auto; }
+#replay-controls { flex:none; padding:12px 18px; background:#f8f5e9; border-bottom:3px solid #405566; color:#263b4a; font:13px var(--font); box-shadow:0 3px 0 #23394b22; z-index:10; }
+.replay-row { display:flex; align-items:center; flex-wrap:wrap; gap:9px; }
+.replay-row + .replay-row { margin-top:8px; }
+#replay-controls h1 { font: bold 18px var(--font); margin:0 12px 0 0; }
+#replay-controls label { display:flex; align-items:center; gap:6px; }
+#replay-controls button, #replay-controls select, #replay-controls input[type=datetime-local] { font:inherit; padding:5px 8px; border:1px solid #9ba9af; border-radius:4px; background:white; color:inherit; min-height:32px; }
+#replay-controls button { cursor:pointer; box-shadow:0 2px 0 #40556633; }
+#replay-controls button:disabled { opacity:.45; cursor:default; }
+#replay-controls a { color:#235e83; margin-left:auto; }
+#replay-controls input[type=range] { flex:1; min-width:110px; accent-color:#287890; }
+#replay-controls [hidden] { display:none; }
+#replay-play { min-width:76px; }
+#replay-clock { font-variant-numeric:tabular-nums; min-width:158px; }
+#replay-coverage { margin:8px 0 0; color:#63727a; font:11px/1.5 var(--font); }
+#replay-event { padding:10px 16px; border-bottom:1px solid var(--line); background:#fff8dd; min-height:64px; white-space:pre-wrap; overflow-wrap:anywhere; }
+#replay-event strong { display:block; font:12px var(--font); color:#8b662b; margin-bottom:5px; }
+#replay-event p { margin:0; font:14px/1.5 var(--font); max-height:180px; overflow:auto; }
+#replay-activity { padding:8px 16px; overflow:auto; max-height:35%; border-top:1px solid var(--line); }
+#replay-activity button { display:block; width:100%; text-align:left; padding:7px 0; border:0; border-bottom:1px solid #dae2e5; background:none; color:inherit; font:12px/1.5 var(--font); cursor:pointer; }
+#replay-error { color:#9b3434; }
+body.replay-mode .replay-launch, body.replay-mode #themer, body.replay-mode #hud, body.replay-mode .head-tools, body.replay-mode #hire-agent { display:none; }
+@media(max-width:700px) {
+ #replay-controls { padding:8px 10px; }
+ #replay-controls h1 { font-size:15px; }
+ #replay-coverage { max-height:34px; overflow:auto; }
+ #replay-controls input[type=datetime-local] { max-width:175px; }
+ body.replay-mode #game { min-height:0; }
+ #replay-activity { max-height:100px; }
+}
+/* A strip of the day's activity, using the office's ink, sky and coin colours. */
+#replay-film { position:relative; height:32px; margin:10px 2px 5px; background:#dce8ed; border:1px solid #8ca5b1; border-bottom:3px solid #405566; }
+#replay-unknown { position:absolute; inset:0 auto 0 0; background:repeating-linear-gradient(135deg,#63727a22 0 3px,transparent 3px 8px); pointer-events:none; }
+#replay-markers { position:absolute; inset:0 6px 0 0; }
+#replay-markers button { position:absolute; bottom:0; width:1%; min-width:7px; min-height:12px; padding:0; border:0; border-radius:0; background:#397b99; box-shadow:inset 0 2px #ffffff88; }
+#replay-markers button.payment { background:#d69a28; }
+#replay-playhead { position:absolute; top:-3px; bottom:-3px; width:2px; background:#263b4a; pointer-events:none; }
+#replay-playhead::before { content:''; position:absolute; left:-3px; top:-3px; border:4px solid transparent; border-top-color:#263b4a; }
+#replay-score { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 22px; font-size:12px; font-variant-numeric:tabular-nums; }
+#replay-score b { color:#25643c; font-size:15px; }
+#replay-phase { color:#235e83; min-width:165px; }
+#replay-length { margin-left:auto; color:#63727a; }
+.replay-paused #party *, .replay-paused #game * { animation-play-state:paused !important; }
+#replay-controls :focus-visible { outline:3px solid #235e83; outline-offset:3px; }
+@media(max-width:700px) { #replay-score { gap:4px 14px; } #replay-length { display:none; } #replay-film { margin-top:8px; height:24px; } #replay-controls h1 { margin-right:0; } }
+/* Scrub previews must be readable even while their decorative loops are paused. */
+body.replay-mode #party .party-win, body.replay-mode .cutscene-window { animation:none; }
+.replay-paused #cutscene * { animation-play-state:paused !important; }
+#replay-options { display:block; flex:1; }
+.replay-options-body { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+#replay-options summary { display:none; }
+@media(max-width:700px) {
+ body.replay-mode { height:auto; min-height:100dvh; overflow:auto; }
+ body.replay-mode #app { flex:none; overflow:visible; }
+ body.replay-mode #game { flex:none; height:48dvh; min-height:280px; }
+ body.replay-mode #feed { height:360px; }
+ body.replay-mode.roster-only #feed { height:65dvh; }
+ #replay-options { display:block; flex:initial; }
+ #replay-options summary { display:block; cursor:pointer; padding:6px; border:1px solid #9ba9af; background:white; border-radius:4px; }
+ #replay-options:not([open]) > .replay-options-body { display:none; }
+ #replay-options[open] { flex-basis:100%; order:3; }
+ #replay-options[open] .replay-options-body { display:flex; flex-wrap:wrap; gap:6px; padding-top:8px; }
+ #replay-controls a { font-size:11px; }
+ #replay-controls label { gap:4px; }
+ #replay-score { font-size:11px; }
+}
+
+body.replay-mode.roster-only #game { display:none; }
+/* Keep the actor and counter above a compact celebration, instead of covering the action. */
+body.replay-mode #party { align-items:end; padding-bottom:20px; }
+body.replay-mode #party .party-win { width:min(460px,100%); max-height:44%; }
+body.replay-mode.roster-only #party { position:fixed; inset:auto 10px 20px; width:auto; height:auto; }
+body.replay-mode.roster-only #party .party-win { max-height:40dvh; }
+.replay-arrival #replay-earned { opacity:.65; }
+#replay-project { max-width:190px; }
+@media(max-width:700px) { body.replay-mode #party { padding:8px; } body.replay-mode #party .party-win { max-height:49%; } }
+#replay-markers button.subscription { background:#9470ad; }
+#replay-event.subscription { background:#f0eaf5; }
+#replay-event.subscription strong { color:#6b4e80; }

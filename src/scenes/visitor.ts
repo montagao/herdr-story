@@ -1,10 +1,10 @@
 import Phaser from 'phaser';
-import { BODY_POSE, BODY_COUNT, FACE_COUNT, bodyKey, faceKey, ensureAppearance } from '../sprites';
+import { BODY_POSE, BODY_COUNT, FACE_COUNT, bodyKey, faceKey, ensureAppearance, wearableBody } from '../sprites';
 import { walkerDepth } from './depth';
 import { WALK, headingFor, type Spot } from './wander';
 import { speechBubble } from './bubble';
 
-export type VisitorKind = 'fan' | 'mascot';
+export type VisitorKind = 'fan' | 'mascot' | 'customer';
 const SPEED = 34;          // px per second: visitors are in less of a hurry than staff
 const STEP_MS = 190;
 
@@ -15,6 +15,8 @@ const STEP_MS = 190;
 export class Visitor {
   readonly node: Phaser.GameObjects.Container;
   private body?: Phaser.GameObjects.Image; private face?: Phaser.GameObjects.Image;
+  /** The coin a customer carries in over their head, until they hand it over at the counter. */
+  private coin?: Phaser.GameObjects.Image;
   private frame = 0; private nextStep = 0;
   private mover?: Phaser.Time.TimerEvent;
   private bubble?: Phaser.GameObjects.Container;
@@ -25,11 +27,22 @@ export class Visitor {
       this.body = scene.add.image(0, 0, bodyKey(look!.body), 'standFront').setOrigin(0, 0);
       this.face = scene.add.image(0, 0, faceKey(look!.face), 'frontR').setOrigin(0, 0);
       this.node.add([this.body, this.face]); this.pose('standFront');
+      if (kind === 'customer') {
+        this.coin = scene.add.image(8, -6, 'main00', 'coin').setOrigin(0.5, 1);
+        this.node.add(this.coin);
+        scene.tweens.add({ targets: this.coin, y: -9, duration: 380, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+      }
     }
   }
-  static async create(scene: Phaser.Scene, kind: VisitorKind, at: Spot) {
-    const look = { body: Math.floor(Math.random() * BODY_COUNT), face: Math.floor(Math.random() * FACE_COUNT) };
-    if (kind === 'fan') await ensureAppearance(scene.textures, look);
+  /** Hand the coin over: it drops into the counter and is gone. */
+  pay() {
+    const coin = this.coin; if (!coin) return; this.coin = undefined;
+    this.scene.tweens.killTweensOf(coin);
+    this.scene.tweens.add({ targets: coin, y: 14, alpha: 0, duration: 260, ease: 'Quad.in', onComplete: () => coin.destroy() });
+  }
+  static async create(scene: Phaser.Scene, kind: VisitorKind, at: Spot, appearance?: { body: number; face: number }) {
+    const look = appearance ?? { body: wearableBody(Math.floor(Math.random() * BODY_COUNT)), face: Math.floor(Math.random() * FACE_COUNT) };
+    if (kind !== 'mascot') await ensureAppearance(scene.textures, look);
     return new Visitor(scene, kind, at, look);
   }
   private pose(frame: string) {
@@ -45,13 +58,16 @@ export class Visitor {
     this.scene.time.delayedCall(ms, () => { this.bubble?.destroy(); this.bubble = undefined; });
   }
   /** Walk the path point by point; the last leg fades them out when `fade` is set. */
-  walk(path: Spot[], fade: boolean, done: () => void) {
+  walk(path: Spot[], fade: boolean, done: () => void, duration?: number) {
     const route = [...path];
+    let previous = { x: this.node.x, y: this.node.y }, length = 0;
+    for (const point of path) { length += Math.hypot(point.x - previous.x, point.y - previous.y); previous = point; }
+    const speed = duration ? length / (duration / 1000) : SPEED;
     let last = this.scene.time.now;
     this.mover?.remove();
     this.mover = this.scene.time.addEvent({ delay: 33, loop: true, callback: () => {
-      const now = this.scene.time.now, dt = Math.min(100, now - last); last = now;
-      let distance = SPEED * dt / 1000;
+      const now = this.scene.time.now, dt = Math.min(duration ? 400 : 100, now - last); last = now;
+      let distance = speed * dt / 1000;
       while (distance > 0) {
         const target = route[0];
         if (!target) { this.mover?.remove(); this.mover = undefined; this.pose('standFront'); done(); return; }

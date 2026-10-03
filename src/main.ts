@@ -7,7 +7,7 @@ import { projectKey } from '../shared/studio';
 import { BridgeClient } from './net/client';
 import type { OfficeClient } from './net/office-client';
 import { OfficeModel } from './model/office';
-import { Feed } from './feed/feed';
+import { Feed, handleOf, type RosterMenuItem } from './feed/feed';
 import { Dialog } from './dialog';
 import { seedFrom, type Prop } from './decor';
 import { audio } from './audio';
@@ -19,15 +19,19 @@ import { Celebrate } from './celebrate';
 import { installEventDebugger } from './debug-events';
 import { Studio } from './studio';
 import { setOfficeLooks } from './sprites';
-import { Loading } from './loading';
+import { Loading, bootFailed, bootSucceeded } from './loading';
 import { settings, SettingsDialog, gearIcon } from './settings';
 import { BossCutscene } from './boss-cutscene';
 import { Reception } from './reception';
 import { OfficeCat } from './office-cat';
 import { Cutscenes, actorOf, salesReport, awardsNight, launchDay, crunchTime, trainingSeminar, conventionDay, type Actor, type RankRow } from './cutscenes';
 import { projectOf } from './model/office';
-import { projectName, employeeName, type StudioState } from '../shared/studio';
+import { projectName, employeeName, type StudioState, type JournalEntry } from '../shared/studio';
 import { taskOf } from '../shared/types';
+import { describeMoney } from './money-words';
+import { SalesTicker } from './ticker';
+import { gameCurrency } from './currency';
+import type { PaymentDetails } from '../shared/payment-details';
 
 let feed: Feed;
 const loading = new Loading();
@@ -35,6 +39,7 @@ async function boot() {
   // Conversations connect before the canvas engine, optional artwork, and remote font finish.
   void document.fonts.load('16px "DotGothic16"').catch(() => {});
   const q = new URLSearchParams(location.search);
+  if (q.get('replay') === '1') { await (await import('./replay')).openReplay(loading); return; }
   const priorVisit = Reception.previousVisit();
   // Demo mode is this same office on a captured snapshot, with no bridge behind it.
   const demo = q.get('demo') === '1' ? await (await import('./demo')).loadDemo() : undefined;
@@ -217,15 +222,52 @@ async function boot() {
     { caption: 'Boom', run: () => office.previewBoom() },
   ];
 
+  // Who paid: the bridge keeps a record per provider event; look it up while the customer walks in.
+  const describe = (event: MoneyEvent) => async () => {
+    if (!/^(evt_|revenuecat:)/.test(event.id)) return describeMoney(event);
+    try { return describeMoney(event, await client.call('payment.detail', { id: event.id }, { timeoutMs: 4000 }) as PaymentDetails); }
+    catch { return describeMoney(event); }
+  };
+  const ticker = lab ? undefined : new SalesTicker(document.getElementById('game')!);
+  // The day's money comes from the journal, not the twelve-event tail; refreshed every quarter
+  // hour and whenever the calendar turns over.
+  let tickerDay = '';
+  const seedTicker = () => {
+    if (!ticker) return;
+    const start = new Date(); start.setHours(0, 0, 0, 0); tickerDay = start.toDateString();
+    void client.call('studio.journal', { since: start.getTime(), kind: 'sale', limit: 200 }, { timeoutMs: 10000 })
+      .then(page => ticker.seedFromJournal((page as { entries: JournalEntry[] }).entries ?? [])).catch(() => {});
+  };
+  window.setInterval(() => { if (new Date().toDateString() !== tickerDay || Date.now() % 900_000 < 60_000) seedTicker(); }, 60_000);
+  void gameCurrency.loadRates(() => client.call('money.rates', {}, { timeoutMs: 8000 }) as Promise<{ date?: string; rates: Record<string, number> }>);
+  // A hot hour: three sales inside sixty minutes cut to the queue outside the shop.
+  const saleTimes: { at: number; amount: number }[] = [];
+  let hotHourUntil = 0;
+  const noteStreak = (event: MoneyEvent) => {
+    if (event.kind !== 'sale' && event.kind !== 'subscribed') return;
+    const now = Date.now();
+    saleTimes.push({ at: now, amount: Math.max(0, event.amount) });
+    while (saleTimes.length && now - saleTimes[0].at > 3600e3) saleTimes.shift();
+    if (saleTimes.length >= 3 && now > hotHourUntil) {
+      hotHourUntil = now + 3600e3;
+      scenes.play(launchDay('Hot hour', `${saleTimes.length} sales in the last hour · ${money(saleTimes.reduce((n, s) => n + s.amount, 0))}`));
+    }
+  };
   const reactToMoney = (event: MoneyEvent) => {
     noteSale(event);
+    const paid = event.kind === 'sale' || event.kind === 'subscribed';
+    const described = paid ? describe(event)() : undefined;
+    ticker?.add(event, described);
     if (event.kind === 'trial_started') void office.visit('fan', 'Just trying it out!');
-    else if (event.kind === 'subscribed' || event.kind === 'subscription_started') void office.visit('mascot', 'A new subscriber!');
-    office.money(event);
-    party.money(event);          // money arriving gets the same window a shipped game gets
-    // Failed and disputed payments include an attempted amount, but no funds arrived.
-    if (event.source === 'revenuecat') hud.refreshAfterPayment();
-    else if (event.kind === 'sale' || event.kind === 'refund') hud.credit(event.amount);
+    else if (event.kind === 'subscription_started') void office.visit('mascot', 'A new subscriber!');
+    // The till rings when the customer reaches the counter: party, HUD and sound land together.
+    office.money(event, { describe: described ? () => described : undefined, onPaid: (line) => {
+      party.money(event, line);          // money arriving gets the same window a shipped game gets
+      // Failed and disputed payments include an attempted amount, but no funds arrived.
+      if (event.source === 'revenuecat') hud.refreshAfterPayment();
+      else if (event.kind === 'sale' || event.kind === 'refund') hud.credit(event.amount);
+      noteStreak(event);
+    } });
   };
   const billingSetup = new BillingSetup();
   hud.onConnect = () => void billingSetup.open();
@@ -247,6 +289,23 @@ async function boot() {
     dialog.onProfile = a => studio.open('people', a.employee_id);
   }
   feed.onSelect = (paneId) => { if (!office.canInteract()) return; const a = model.agents.get(paneId); if (a) { office.focus(paneId); openAgent(a); } };
+  feed.menuFor = (paneId) => {
+    const a = model.agents.get(paneId); if (!a) return [];
+    const employee = studio && a.employee_id ? model.studio?.employees.find(e => e.id === a.employee_id) : undefined;
+    const canEdit = !!employee && dialog.writable;
+    const items: RosterMenuItem[] = [];
+    if (employee) items.push({ label: employee.favorite ? 'Unpin from the top' : 'Pin to the top', disabled: !canEdit, run: () => void studio!.pinEmployee(employee.id, !employee.favorite) });
+    if (employee) items.push({ label: 'Rename…', disabled: !canEdit, edit: { value: employee.name, submit: name => void studio!.renameEmployee(employee.id, name) } });
+    items.push({ label: 'Open conversation', run: () => { office.focus(paneId); openAgent(a); } });
+    items.push({ label: 'Show on the floor', run: () => { if (office.canInteract()) office.focus(paneId); } });
+    if (employee) items.push({ label: 'Employee profile', run: () => studio!.open('people', employee.id) });
+    items.push({ label: `Copy ${handleOf(agentKind(a), a.pane_id)}`, run: async () => { try { await navigator.clipboard.writeText(handleOf(agentKind(a), a.pane_id)); studio?.toast('Handle copied.'); } catch { studio?.toast('Could not copy.'); } } });
+    if (a.agent_status === 'working' && dialog.writable) items.push({ label: 'Stop this task', danger: true, run: async () => {
+      try { await client.call('agent.interrupt', { target: paneId }); studio?.toast(`Asked ${employeeName(a)} to stop.`); }
+      catch (error) { studio?.toast((error as Error).message); }
+    } });
+    return items;
+  };
   office.onPreview = agent => { if (office.canInteract()) dialog.prefetch(agent); };
   feed.onPreview = paneId => { const agent = model.agents.get(paneId); if (agent) office.onPreview?.(agent); };
   feed.onProjectSelect = project => { if (office.canInteract()) office.focusProject(project); };
@@ -470,7 +529,8 @@ async function boot() {
       noteJournal(msg.studio); checkWeek();
       // The tail the bridge kept, so a reload does not come back to an empty sales strip. It is
       // history, not news: the roster lists it, the office does not re-enact it.
-      if (msg.money?.length) feed.money(msg.money);
+      if (msg.money?.length) { feed.money(msg.money); ticker?.seed(msg.money); }
+      seedTicker();
     } else if (msg.type === 'agents') { workspaces = msg.workspaces ?? workspaces; setOfficeLooks(msg.agents); model.setAgents(msg.agents); feed.summary(msg.agents); badge(msg.agents); dialog.sync(msg.agents); studio?.sync(model.studio, msg.agents, dialog.writable); hud.clock(); }
     else if (msg.type === 'studio') { model.setStudio(msg.studio); noteJournal(msg.studio); studio?.sync(msg.studio, [...model.agents.values()], dialog.writable); feed.refresh(); hud.bump(); }
     else if (msg.type === 'queue') dialog.queueUpdate(msg.item);
@@ -497,10 +557,11 @@ async function boot() {
   if (!lab && !people) hud.start(); else document.getElementById('hud')?.remove();
   (window as any).hs = { model, client, game, party, dialog, office, hud, billingSetup, studio, bossCutscene, scenes, reception, cat };
   (window as any).__herdrReady = true;
+  bootSucceeded();
 }
 void boot().catch((error) => {
-  loading.fail((error as Error).message || String(error));
-  const box = document.getElementById('boot-error');
-  if (box) { box.hidden = false; box.textContent = `Could not start the office: ${(error as Error).message || String(error)}`; }
+  const message = (error as Error).message || String(error);
+  loading.fail(message);
+  bootFailed(message);
   console.error(error);
 });
